@@ -1,9 +1,7 @@
 """Prompt for market hotspot monitoring using TWSE OpenAPI endpoints."""
 
-from fastmcp.prompts.prompt import PromptMessage, TextContent
 
-
-def market_hotspot_monitoring_prompt(monitoring_scope: str = "comprehensive", date_filter: str = "today") -> PromptMessage:
+def market_hotspot_monitoring(monitoring_scope: str = "comprehensive", date_filter: str = "today") -> str:
     """Prompt for market hotspot monitoring using TWSE OpenAPI endpoints."""
     content = f"""台灣股市熱點監控指引
 
@@ -29,6 +27,8 @@ def market_hotspot_monitoring_prompt(monitoring_scope: str = "comprehensive", da
 - `get_daily_day_trading_targets()`：全市場當沖占比與當沖量大的個股
 - `get_stock_daily_trading(stock_no=code)`：個股日成交量與價格變動
 - `get_etf_regular_investment_ranking()`：熱門定期定額投資趨勢
+- `get_etf_daily_nav(sort_by="creation")`：今日淨申購最多的 ETF（資金流向）；`sort_by="premium"` 檢查是否溢價過熱
+- `get_etf_monthly_stats(sort_by="net_flow")`：上月淨申購金額排行
 - `get_foreign_holdings(sort_by="ratio", limit=20)`：外資流向指標
 
 **總體環境：**
@@ -108,4 +108,4 @@ def market_hotspot_monitoring_prompt(monitoring_scope: str = "comprehensive", da
 
 請先呼叫上述對應工具取得真實資料，再依實際回傳內容提供完整的市場熱點分析。
 """
-    return PromptMessage(role="user", content=TextContent(type="text", text=content))
+    return content

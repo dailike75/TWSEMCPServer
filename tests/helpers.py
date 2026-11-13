@@ -1,11 +1,61 @@
-"""Shared test helpers for e2e API tests."""
+"""Shared test helpers for the live contract tests (tests/contract/) and offline unit tests."""
 
+import http.server
 import json
+import threading
+import time
+from contextlib import contextmanager
+
 import pytest
 import requests
 from utils.api_client import TWSEAPIClient
 
 TAIFEX_OPENAPI_HOST = "openapi.taifex.com.tw"
+
+
+@contextmanager
+def scripted_server(*replies):
+    """127.0.0.1 上的 HTTP 伺服器：依序回覆 ``replies``（(status, headers, body) 或
+    (status, headers, body, 延遲秒數)），之後一律 200 JSON。
+
+    yield (url, seen)，seen 記錄每個請求的 method、client port、Cookie 與時間。傳輸層的行為（urllib3 的
+    retry、連線重用、circuit breaker 看到的真實 response）用假 response 測不到，所以用它。
+    """
+    seen = []
+    queue = list(replies)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"  # keep-alive，連線才能重用
+
+        def _reply(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
+            seen.append({"method": self.command, "port": self.client_address[1],
+                         "cookie": self.headers.get("Cookie"), "at": time.monotonic()})
+            status, headers, body, *delay = queue.pop(0) if queue else (200, {}, b'{"ok": true}')
+            if delay:
+                time.sleep(delay[0])
+            self.send_response(status)
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = do_POST = _reply
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/data", seen
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def _is_taifex_csv_fallback(url: str, body: str) -> bool:
@@ -65,6 +115,25 @@ def fetch_or_skip(url: str, **kwargs):
         raise
 
 
+def gateway_or_skip(gateway, *args, **kwargs):
+    """Call a sources/ gateway with the shared live client; skip on the transient failures
+    ``fetch_or_skip`` skips (5xx, connection failure, truncated stream).
+
+    Everything else propagates — in particular ``UpstreamFormatError``, which is exactly the
+    interface change a gateway contract test exists to catch.
+    """
+    try:
+        return gateway(TWSEAPIClient.get_instance(), *args, **kwargs)
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code >= 500:
+            pytest.skip(f"Upstream server error ({e.response.status_code}) in {gateway.__name__}")
+        raise
+    except requests.ConnectionError as e:
+        pytest.skip(f"Cannot reach upstream in {gateway.__name__} — {e}")
+    except requests.exceptions.ChunkedEncodingError as e:
+        pytest.skip(f"Upstream connection dropped mid-response in {gateway.__name__} — {e}")
+
+
 def fetch_bytes_or_skip(url: str, **kwargs) -> bytes:
     """``fetch_bytes`` counterpart of ``fetch_or_skip`` for CSV / zip / HTML sources.
 
@@ -106,8 +175,8 @@ class _CapturingMCP:
 
     ``register_tools`` only ever needs ``.tool`` — either bare (``@mcp.tool``) or
     called with keywords (``mcp.tool(name=..., description=...)``). Capturing the
-    undecorated callables lets tests exercise a tool end-to-end without spinning
-    up a server.
+    registered callables lets tests exercise a tool end-to-end without spinning
+    up a server. A failing tool raises ``ToolError`` (MCP ``isError``).
     """
 
     def __init__(self):

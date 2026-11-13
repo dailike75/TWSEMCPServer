@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
-[![API Tests](https://github.com/twjackysu/TWStockMCPServer/actions/workflows/api-tests.yml/badge.svg)](https://github.com/twjackysu/TWStockMCPServer/actions/workflows/api-tests.yml)
+[![API Contract Tests](https://github.com/twjackysu/TWStockMCPServer/actions/workflows/api-tests.yml/badge.svg)](https://github.com/twjackysu/TWStockMCPServer/actions/workflows/api-tests.yml)
 
 A comprehensive **Model Context Protocol (MCP) server** designed for Taiwan Stock Exchange (TWSE) data analysis, providing real-time stock information, financial statements, ESG data, and trend analysis functionality.
 
@@ -65,8 +65,9 @@ Cross-checks disposal/warning/day-trading-restriction/margin-restriction lists
 ### Futures / Institutional Historical Lookback
 openapi.taifex.com.tw only ever returns the latest trading day. This project reads TAIFEX's
 own website download pages (`www.taifex.com.tw`) instead: the latest trading day by default,
-or any past period — futures/options daily market reports, 三大法人 positions, large-trader OI
-> *"Pull me a month of daily OHLC for TX futures" / "How has the foreign futures position changed over the last quarter?"*
+or any past period — futures/options daily market reports, 三大法人 positions, large-trader OI;
+a stock code finds its stock futures; intraday futures bars for the last 30 trading days (built from every trade, night session included)
+> *"Pull me a month of daily OHLC for TX futures" / "How has the foreign futures position changed over the last quarter?" / "How did TX trade intraday last Friday?"*
 
 ### Multi-Period Financials, Revenue & Dividends
 Financial statements, monthly revenue and dividends come from MOPS (公開資訊觀測站) for listed,
@@ -82,6 +83,10 @@ TDCC shareholding distribution (big-holder vs. retail ratios, with a weekly tren
 三大法人 and margin balances for any past date; TWSE day-trading stats, ex-rights results and
 sector index history
 > *"What share of GlobalWafers do 1,000-lot holders own?" / "How did the semiconductor index do last month?"*
+
+### ETFs
+Every issuer, TWSE- and TPEx-listed (bond and active ETFs included): basic info (issuer, tracked index, distribution frequency, manager, TPEx fees), daily units outstanding change and estimated NAV / premium-discount rankings, and monthly scale / holders / creations-redemptions / regular-investment trends (since 2007), and holdings: monthly top 10 (since 2021-08) and quarterly holdings above 1% of NAV (since 2021-09)
+> *"What premium is 0050 trading at?" / "Which ETFs saw heavy redemptions today?" / "How have 00981A's holders changed this half-year?" / "What are 00878's top 10 holdings?"*
 
 ### Macro
 NDC business-cycle signal (景氣燈號) and leading/coincident/lagging indicators, Taiwan PMI/NMI,
@@ -124,25 +129,33 @@ This project is powered by **Prefect Horizon**, which hosts a free remote MCP Se
 }
 ```
 
+### 🎛️ Serving Only Some Data Sources
+There are many tools; turn off the sources you don't need to shorten the tool list your client reads. Source tags: `twse` (TWSE), `tpex` (TPEx), `taifex` (TAIFEX), `mops` (MOPS), `tdcc` (TDCC), `sitca` (SITCA), `ndc` (National Development Council), `cbc` (Central Bank).
+- `TWSE_INCLUDE_SOURCES=twse,tpex`: serve only these sources (unset = all)
+- `TWSE_EXCLUDE_SOURCES=taifex`: turn these sources off
+
+A tool is hidden when any source it reads is off (e.g. ETF info reads SITCA, TWSE and TPEx). With Docker, pass `-e TWSE_EXCLUDE_SOURCES=taifex`.
+
 ### 🔧 Local Installation
 ```bash
 git clone https://github.com/twjackysu/TWStockMCPServer.git
 cd TWStockMCPServer
-uv sync && uv run fastmcp dev server.py
+uv sync && uv run fastmcp dev inspector server.py
 ```
 
 ## 📡 Data Sources
 
 | Source | Description | Tools |
 |--------|-------------|-------|
-| [TWSE OpenAPI](https://openapi.twse.com.tw) | Taiwan Stock Exchange official API — corporate governance, ESG, financial ratios, announcement lists, warrants, brokers, etc. | 106 |
+| [TWSE OpenAPI](https://openapi.twse.com.tw) | Taiwan Stock Exchange official API — corporate governance, ESG, financial ratios, announcement lists, warrants, brokers, etc. | 105 |
 | [TWSE Web API](https://www.twse.com.tw) | TWSE web API endpoints (latest trading day by default, any past date on request) — daily OHLC, monthly avg price, valuation, margin balance, listed stocks institutional investors (amounts/shares), whole-market daily close, TAIEX index history, foreign holdings history, per-stock monthly/yearly summaries, block trade detail, short-sale/lending balance & trades, ex-rights/dividend results, day-trading targets & statistics, all index closes incl. sector indices (latest or any past date) | 19 |
-| [MIS Real-time Quotes](https://mis.twse.com.tw) | Intraday real-time multi-stock quotes (listed + OTC) | 1 |
-| [TPEx OpenAPI](https://www.tpex.org.tw/openapi) | TPEx OTC market — daily close (latest day; past dates come from the website), institutional investors summary, warning/disposal stocks, odd-lot, index | 6 |
+| [MIS Real-time Quotes](https://mis.twse.com.tw) | Intraday real-time multi-stock quotes (listed + OTC); ETF units outstanding and estimated NAV / premium-discount disclosure | 2 |
+| [TPEx OpenAPI](https://www.tpex.org.tw/openapi) | TPEx OTC market — daily close (latest day; past dates come from the website), warning/disposal stocks, odd-lot, index | 6 |
 | [TAIFEX OpenAPI](https://openapi.taifex.com.tw) | TAIFEX derivatives — options analytics (delta / OI change), margin, statistics | 6 |
-| [TAIFEX website downloads](https://www.taifex.com.tw) | TAIFEX's own data-download pages — futures / options daily market reports, 三大法人 (futures/options split, totals, by contract, calls/puts), futures and options large-trader OI, Put/Call Ratio (latest trading day by default, any past period on request; openapi.taifex.com.tw only returns the latest day) | 10 |
+| [TAIFEX website downloads](https://www.taifex.com.tw) | TAIFEX's own data-download pages — futures / options daily market reports, 三大法人 (futures/options split, totals, by contract, calls/puts), futures and options large-trader OI, Put/Call Ratio (latest trading day by default, any past period on request; openapi.taifex.com.tw only returns the latest day), intraday futures minute bars (every trade, last 30 trading days) | 11 |
 | [MOPS](https://mops.twse.com.tw) | Market Observation Post System — income statement / balance sheet / cash-flow statement, monthly revenue, dividends (latest by default, any past period on request; listed, OTC, emerging and public companies), material information with full text, directors' holdings and pledges, insiders' monthly holding changes, treasury-stock buybacks, endorsements/guarantees and fund lending, investor conferences | 11 |
-| [TPEx website](https://www.tpex.org.tw) | TPEx website JSON — OTC per-stock daily OHLC, 三大法人, margin balances, P/E / yield / P/B, foreign-holding ranking, ex-rights/dividend results (latest trading day by default, or any past date) | 6 |
+| [TPEx website](https://www.tpex.org.tw) | TPEx website JSON — OTC per-stock daily OHLC, 三大法人 per stock (rankable by foreign / trust / dealer) and market totals (day / week / month), margin balances, P/E / yield / P/B, foreign-holding ranking, ex-rights/dividend results (latest trading day by default, or any past date) | 7 |
+| [SITCA ETF zone](https://www.sitca.org.tw/ROC/SITCA_ETF/index.html) | Every issuer's ETF basic info (merged with TWSE fund basics and TPEx ETF specs), monthly scale / NAV / holders / creations-redemptions / regular investment (since 2007), fund holdings (monthly top 10, quarterly >1% of NAV) | 3 |
 | [TDCC open data](https://opendata.tdcc.com.tw) | Shareholding distribution by holding size (latest week in full, or a week-by-week trend over the last 13 weeks via the TDCC query page) | 1 |
 | [National Development Council](https://data.gov.tw/dataset/6099) | Business-cycle signal & indicators (since 1982), Taiwan PMI/NMI | 2 |
 | [Central Bank](https://cpx.cbc.gov.tw) | Daily TWD and major trading-partner currencies vs. USD (since 1993) | 1 |

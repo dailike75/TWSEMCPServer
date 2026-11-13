@@ -1,9 +1,7 @@
 """Prompt for dividend investment strategy using TWSE OpenAPI endpoints."""
 
-from fastmcp.prompts.prompt import PromptMessage, TextContent
 
-
-def dividend_investment_strategy_prompt(strategy_type: str = "high_yield", time_horizon: str = "quarterly") -> PromptMessage:
+def dividend_investment_strategy(strategy_type: str = "high_yield", time_horizon: str = "quarterly") -> str:
     """Prompt for dividend investment strategy using TWSE OpenAPI endpoints."""
     content = f"""台灣股市股利投資策略指引
 
@@ -30,6 +28,9 @@ def dividend_investment_strategy_prompt(strategy_type: str = "high_yield", time_
 **市場驗證：**
 - `get_foreign_holdings(sort_by="ratio", limit=20)`：外資偏好的股利股
 - `get_etf_regular_investment_ranking()`：熱門定期定額投資標的
+- `get_etf_info(keyword="高股息")`：高股息 ETF 清單（追蹤指數、配息頻率）
+- `get_etf_monthly_stats(code, months=12)`：高股息 ETF 的規模與受益人數趨勢
+- `get_etf_holdings(code)`：高股息 ETF 的前十大持股，檢查成分股集中度與產業分布
 - `get_stock_daily_trading(stock_no=code)`：除權息前後的股價穩定度
 - `get_adjusted_price_history(code, start_month, end_month)`：還原權息日K，計算含息的真實報酬
 
@@ -122,4 +123,4 @@ def dividend_investment_strategy_prompt(strategy_type: str = "high_yield", time_
 
 請先呼叫上述對應工具取得真實資料，再依實際回傳內容提供完整的股利投資策略。
 """
-    return PromptMessage(role="user", content=TextContent(type="text", text=content))
+    return content

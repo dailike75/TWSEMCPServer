@@ -1,12 +1,18 @@
 """TAIFEX annual and monthly trading volume statistics."""
 
-from typing import Optional
+from typing import Literal, Optional
 from fastmcp import FastMCP
-from utils import TWSEAPIClient, handle_api_errors
+from utils import TWSEAPIClient
+from toolkit import handle_api_errors
 from utils.taifex import TAIFEX_HEADERS
 
 _ANNUAL_URL = "https://openapi.taifex.com.tw/v1/AnnualTradingVolume"
-_MONTHLY_STATS_URL = "https://openapi.taifex.com.tw/v1/MonthlyTradingStatisticsFutures"
+# Futures and options files have identical columns (verified 2026-10-18).
+Market = Literal["futures", "options"]  # _MONTHLY_STATS_URLS
+_MONTHLY_STATS_URLS = {
+    "futures": ("期貨", "https://openapi.taifex.com.tw/v1/MonthlyTradingStatisticsFutures"),
+    "options": ("選擇權", "https://openapi.taifex.com.tw/v1/MonthlyTradingStatisticsOptions"),
+}
 
 
 def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None:
@@ -19,11 +25,10 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
         可用於長期趨勢分析與商品流動性比較。
         留空 contract 則顯示全部商品。
 
+        回傳：各商品年度成交量、交易日數、平均每日成交量
+
         Args:
             contract: 期貨契約代碼，例如 TX、MTX。留空則顯示全部。
-
-        Returns:
-            各商品年度成交量、交易日數、平均每日成交量
         """
         data = _client.fetch_json(_ANNUAL_URL, headers=TAIFEX_HEADERS)
 
@@ -54,19 +59,22 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
 
     @mcp.tool
     @handle_api_errors()
-    def get_monthly_trading_statistics() -> str:
-        """查詢期貨市場月統計資料，依商品類別（股價指數、利率、商品、股票）分類，
-        顯示各類型交易人（自營商、投信、外資、散戶等）的買賣量與月底未平倉量。
+    def get_monthly_trading_statistics(market: Market = "futures") -> str:
+        """查詢期貨或選擇權市場上個月的交易人結構統計，依商品類別（股價指數、股票、商品、匯率）分類，
+        顯示各類型交易人（散戶、自營商、投信、外資、期貨自營商）的買賣量與月底未平倉量。
 
-        Returns:
-            各期貨商品類別的月統計交易量，依交易人別細分
+        回傳：各商品類別的月統計交易量，依交易人別細分
+
+        Args:
+            market: futures（期貨，預設）或 options（選擇權）
         """
-        data = _client.fetch_json(_MONTHLY_STATS_URL, headers=TAIFEX_HEADERS)
+        kind, url = _MONTHLY_STATS_URLS[market]
+        data = _client.fetch_json(url, headers=TAIFEX_HEADERS)
 
         if not isinstance(data, list) or not data:
-            return "查無期貨月統計資料"
+            return f"查無{kind}月統計資料"
 
-        lines = [f"【期貨市場月統計】（共 {len(data)} 筆）\n"]
+        lines = [f"【{kind}市場月統計】（共 {len(data)} 筆）\n"]
         for item in data:
             ym = item.get("YYYYMM", "?")
             name = item.get("ContactName", "?")

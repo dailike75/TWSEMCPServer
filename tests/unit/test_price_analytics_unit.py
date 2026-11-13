@@ -1,0 +1,180 @@
+"""utils/indicators.py、utils/price_series.py 與 tools/analytics/price_tools.py 的單元測試（不打網路）。
+
+指標數值用可以手算的小序列驗證；還原權息與市場判斷用 OfflineClient 餵假資料。
+"""
+
+from datetime import date
+
+import pytest
+from fastmcp.exceptions import ToolError
+
+from tests.helpers import register_module_tools
+from tests.offline import OfflineClient
+from tools.analytics import price_tools
+from utils import indicators
+from services import price_series
+from services.price_series import Bar, ExRightEvent, adjust_bars, fetch_daily_bars, fetch_exright_events
+
+pytestmark = pytest.mark.offline
+
+
+# ---------- indicators ----------
+
+def test_sma_and_ema_known_values():
+    assert indicators.sma([1, 2, 3, 4, 5], 3) == [None, None, 2, 3, 4]
+    # EMA(3): 以前 3 筆 SMA=2 起算，k=0.5 → 3, 4
+    assert indicators.ema([1, 2, 3, 4, 5], 3) == [None, None, 2, 3, 4]
+
+
+def test_rsi_wilder_known_values():
+    # gains [1,1,0,1] losses [0,0,1,0]，n=2 → 100, 50, 75
+    assert indicators.rsi([1, 2, 3, 2, 3], 2) == [None, None, 100.0, 50.0, 75.0]
+
+
+def test_kd_seeded_at_50():
+    rising = [1.0, 2.0, 3.0]
+    k, d = indicators.kd(rising, rising, rising, n=2)
+    assert k[0] is None
+    assert k[1] == pytest.approx(50 * 2 / 3 + 100 / 3)
+    assert d[1] == pytest.approx(50 * 2 / 3 + k[1] / 3)
+
+
+def test_macd_and_bollinger_shapes():
+    closes = [float(i) for i in range(1, 61)]
+    dif, sig, osc = indicators.macd(closes)
+    assert dif[24] is None and dif[25] is not None and sig[25 + 7] is None and sig[25 + 8] is not None
+    assert osc[-1] == pytest.approx(dif[-1] - sig[-1])
+    upper, mid, lower = indicators.bollinger([10.0] * 25)
+    assert upper[-1] == mid[-1] == lower[-1] == 10.0 and upper[18] is None
+
+
+# ---------- price series ----------
+
+def _bar(d, close):
+    return Bar(d, close, close, close, close, 1000)
+
+
+def test_adjust_bars_multiplies_every_later_factor():
+    bars = [_bar(date(2026, 6, 1), 100), _bar(date(2026, 7, 1), 100), _bar(date(2026, 8, 1), 100)]
+    events = [ExRightEvent(date(2026, 6, 15), 100, 90, "息"), ExRightEvent(date(2026, 7, 15), 100, 80, "權")]
+    adj = adjust_bars(bars, events)
+    assert [b.close for b in adj] == [pytest.approx(72), pytest.approx(80), 100]
+    assert adj[0].volume == 1000  # 成交量不調整
+
+
+def _stock_day(params, _body):
+    return {"stat": "很抱歉，沒有符合條件的資料!"}
+
+
+def _trading_stock(params, _body):
+    if params["date"] != "2026/09/01":
+        return {"tables": [{"data": []}]}
+    return {"name": "環球晶", "tables": [{"fields": ["日 期", "成交張數", "成交仟元", "開盤", "最高", "最低", "收盤", "漲跌", "筆數"],
+                                       "data": [["115/09/30", "18,766", "1", "966", "1,035", "953", "1,035", "90", "1"]]}]}
+
+
+def test_market_detection_falls_back_to_otc_and_converts_lots_to_shares():
+    client = OfflineClient({"/exchangeReport/STOCK_DAY": _stock_day, "/afterTrading/tradingStock": _trading_stock})
+    market, name, bars = fetch_daily_bars(client, "6488", [(2026, 8), (2026, 9)])
+    assert (market, name) == ("上櫃", "環球晶")
+    assert bars == [Bar(date(2026, 9, 30), 966, 1035, 953, 1035, 18_766_000)]
+
+
+def test_listed_detection_parses_name_and_skips_untraded_days():
+    payload = {"stat": "OK", "title": "115年09月 2330 台積電           各日成交資訊",
+               "fields": ["日期", "成交股數", "成交金額", "開盤價", "最高價", "最低價", "收盤價", "漲跌價差", "成交筆數", "註記"],
+               "data": [["115/09/29", "1,000", "1", "2,475.00", "2,495.00", "2,475.00", "2,475.00", "0", "1", ""],
+                        ["115/09/30", "0", "0", "--", "--", "--", "--", "0", "0", ""]]}
+    client = OfflineClient({"/exchangeReport/STOCK_DAY": payload})
+    market, name, bars = fetch_daily_bars(client, "2330", [(2026, 9)])
+    assert (market, name) == ("上市", "台積電")
+    assert bars[0].close == 2475.0 and bars[1].close is None
+
+
+def test_exright_events_for_both_markets():
+    fields = ["資料日期", "股票代號", "股票名稱", "除權息前收盤價", "除權息參考價", "權值+息值", "權/息", "漲停價格", "跌停價格",
+              "開盤競價基準", "減除股利參考價", "詳細資料", "最近一次申報資料 季別/日期", "最近一次申報每股 (單位)淨值",
+              "最近一次申報每股 (單位)盈餘"]
+    tail = ["--"] * 4 + ["", "", "", ""]
+    listed = {"stat": "OK", "fields": fields, "data": [["115年06月11日", "2330", "台積電", "2,255.00", "2,248.99", "6.0", "息"] + tail,
+                                                       ["115年06月11日", "2317", "鴻海", "1", "1", "0", "息"] + tail]}
+    otc_fields = ["除權息日期", "代號", "名稱", "除權息前收盤價", "除權息參考價", "權值", "息值", "權值+息值", "權/息", "漲停價",
+                  "跌停價", "開始交易基準價", "減除股利參考價", "現金股利", "每仟股無償配股", "現金增資股數", "現金增資認購價"]
+    otc = {"stat": "ok", "tables": [{"fields": otc_fields, "data": [
+        ["115/07/01", "4116", "明基醫  ", "38.50", "36.50", "0", "2", "2", "除息"] + ["0"] * 8,
+        ["115/07/01", "8936", "國統", "1", "1", "0", "0", "0", "除息"] + ["0"] * 8,
+    ]}]}
+    client = OfflineClient({"/exRight/TWT49U": listed, "/bulletin/exDailyQ": otc})
+    ev = fetch_exright_events(client, "上市", "2330", date(2026, 1, 1), date(2026, 12, 31))
+    assert ev == [ExRightEvent(date(2026, 6, 11), 2255.0, 2248.99, "息")]
+    ev = fetch_exright_events(client, "上櫃", "4116", date(2026, 1, 1), date(2026, 12, 31))
+    assert ev[0].kind == "除息" and ev[0].factor == pytest.approx(36.5 / 38.5)
+
+
+# ---------- tools ----------
+
+@pytest.mark.parametrize("start,end,message", [
+    ("2026-01", "", "格式錯誤"), ("202603", "202601", "不可晚於"), ("202501", "202601", "最多 12 個月"),
+])
+def test_month_argument_validation(start, end, message):
+    fn = register_module_tools(price_tools, OfflineClient({}))["get_adjusted_price_history"]
+    with pytest.raises(ToolError, match=message):
+        fn("2330", start, end)
+
+
+def test_indicators_need_enough_history(monkeypatch):
+    """結構化工具沒有結果可回時是錯誤：宣告了 output schema，成功的回覆就必須附上結構化資料."""
+    monkeypatch.setattr(price_tools, "fetch_daily_bars", lambda *_a: ("上市", "台積電", [_bar(date(2026, 9, 1), 1)] * 10))
+    fn = register_module_tools(price_tools, OfflineClient({}))["get_technical_indicators"]
+    with pytest.raises(ToolError, match="僅 10 個交易日"):
+        fn("2330")
+
+
+def _rising_bars(count):
+    start = date(2026, 1, 1).toordinal()
+    return [Bar(date.fromordinal(start + i), 100 + i, 101 + i, 99 + i, 100.5 + i, 1000 * (i + 1)) for i in range(count)]
+
+
+def test_indicators_reply_carries_each_day(monkeypatch):
+    bars = _rising_bars(70)
+    monkeypatch.setattr(price_tools, "fetch_daily_bars", lambda *_a: ("上市", "台積電", bars))
+    fn = register_module_tools(price_tools, OfflineClient({}))["get_technical_indicators"]
+    result = fn("2330", adjusted=False, days=3)
+    data = result.structured_content
+    assert (data["code"], data["market"], data["adjusted"], data["sample_days"]) == ("2330", "上市", False, 70)
+    assert data["sample_start"] == "2026-01-01" and [d["day"] for d in data["days"]] == [
+        "2026-03-09", "2026-03-10", "2026-03-11"]
+    last = data["days"][-1]
+    closes = [b.close for b in bars]
+    assert last["close"] == 169.5 and last["ma5"] == pytest.approx(sum(closes[-5:]) / 5)
+    assert last["ma60"] == pytest.approx(sum(closes[-60:]) / 60) and last["volume"] == 70_000
+    assert last["osc"] == pytest.approx(last["dif"] - last["macd"])
+    text = result.content[0].text
+    assert f"MA5: {last['ma5']:,.2f}（收盤高於）" in text and text.count("\n2026-03-") == 3
+
+
+def test_adjusted_history_reply_carries_bars_and_adjustments(monkeypatch):
+    bars = [_bar(date(2026, 6, 1), 100), _bar(date(2026, 7, 1), 100)]
+    monkeypatch.setattr(price_tools, "fetch_daily_bars", lambda *_a: ("上市", "台積電", bars))
+    monkeypatch.setattr(price_tools, "fetch_exright_events",
+                        lambda *_a: [ExRightEvent(date(2026, 6, 15), 100, 90, "息")])
+    fn = register_module_tools(price_tools, OfflineClient({}))["get_adjusted_price_history"]
+    result = fn(" 2330 ")
+    data = result.structured_content
+    assert data["code"] == "2330" and data["adjustments"] == [
+        {"day": "2026-06-15", "kind": "息", "close_before": 100.0, "reference": 90.0, "factor": 0.9}]
+    assert data["bars"][0] == {"day": "2026-06-01", "open": pytest.approx(90), "high": pytest.approx(90),
+                               "low": pytest.approx(90), "close": pytest.approx(90), "raw_close": 100, "volume": 1000}
+    assert data["bars"][1]["close"] == data["bars"][1]["raw_close"] == 100
+    assert "2026-06-15 息 前收 100 → 參考價 90（因子 0.900000）" in result.content[0].text
+
+
+def test_adjusted_history_without_bars_is_an_error(monkeypatch):
+    monkeypatch.setattr(price_tools, "fetch_daily_bars", lambda *_a: ("", "", []))
+    fn = register_module_tools(price_tools, OfflineClient({}))["get_adjusted_price_history"]
+    with pytest.raises(ToolError, match="查無 9999 在"):
+        fn("9999")
+
+
+def test_months_back_crosses_year():
+    assert price_series.months_back(3, date(2026, 2, 1)) == [(2025, 12), (2026, 1), (2026, 2)]

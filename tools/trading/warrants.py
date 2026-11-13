@@ -4,12 +4,12 @@ from typing import Optional
 from fastmcp import FastMCP
 from utils import (
     TWSEAPIClient,
-    handle_api_errors,
     format_list_response,
     format_multiple_records,
     format_properties_with_values_multiline,
     DEFAULT_DISPLAY_LIMIT,
 )
+from toolkit import Limit, Offset, handle_api_errors
 
 
 def _format_warrant_summary(item) -> str:
@@ -29,7 +29,7 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
 
     @mcp.tool
     @handle_api_errors()
-    def get_warrant_basic_info(code: str = "", limit: int = DEFAULT_DISPLAY_LIMIT, offset: int = 0) -> str:
+    def get_warrant_basic_info(code: str = "", limit: Limit = DEFAULT_DISPLAY_LIMIT, offset: Offset = 0) -> str:
         """查詢上市權證基本資料彙總表。
 
         Args:
@@ -51,7 +51,7 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
 
     @mcp.tool
     @handle_api_errors()
-    def get_warrant_daily_trading(code: str = "", limit: int = DEFAULT_DISPLAY_LIMIT, offset: int = 0) -> str:
+    def get_warrant_daily_trading(code: str = "", limit: Limit = DEFAULT_DISPLAY_LIMIT, offset: Offset = 0) -> str:
         """查詢上市認購(售)權證每日成交資料檔。
 
         Args:
@@ -75,7 +75,7 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
 
     @mcp.tool
     @handle_api_errors()
-    def get_warrant_yearly_issuance_statistics(limit: int = DEFAULT_DISPLAY_LIMIT, offset: int = 0) -> str:
+    def get_warrant_yearly_issuance_statistics(limit: Limit = DEFAULT_DISPLAY_LIMIT, offset: Offset = 0) -> str:
         """查詢上市認購(售)權證年度發行量概況統計表。
 
         Args:

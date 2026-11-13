@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
-[![API Tests](https://github.com/twjackysu/TWStockMCPServer/actions/workflows/api-tests.yml/badge.svg)](https://github.com/twjackysu/TWStockMCPServer/actions/workflows/api-tests.yml)
+[![API Contract Tests](https://github.com/twjackysu/TWStockMCPServer/actions/workflows/api-tests.yml/badge.svg)](https://github.com/twjackysu/TWStockMCPServer/actions/workflows/api-tests.yml)
 
 一個全面的**模型上下文協議 (MCP) 伺服器**，專為台灣證券交易所 (TWSE) 數據分析設計，提供即時股票資訊、財務報表、ESG 數據和趨勢分析功能。
 
@@ -64,8 +64,9 @@ Put/Call Ratio、大額交易人未沖銷部位、三大法人期貨/選擇權�
 
 ### 期貨/三大法人歷史回溯查詢
 openapi.taifex.com.tw 僅提供最新一個交易日，本專案改用期交所網站下載頁面
-（`www.taifex.com.tw`）：預設查最新交易日，也可回溯查詢期貨/選擇權每日行情、三大法人部位、大額交易人部位
-> *"幫我拉台指期最近一個月的每日OHLC" / "外資期貨部位過去三個月怎麼變化？"*
+（`www.taifex.com.tw`）：預設查最新交易日，也可回溯查詢期貨/選擇權每日行情、三大法人部位、大額交易人部位；
+股票代號可直接查對應的股票期貨；最近 30 個交易日的期貨盤中走勢（由每筆成交彙總成分鐘 K 線，含夜盤）
+> *"幫我拉台指期最近一個月的每日OHLC" / "外資期貨部位過去三個月怎麼變化？" / "上週五台指期盤中是怎麼走的？"*
 
 ### 財報／營收／股利多期歷史
 財報、月營收、股利改由公開資訊觀測站（MOPS）提供（上市、上櫃、興櫃、公發公司皆可）：預設最新一期，
@@ -77,6 +78,10 @@ openapi.taifex.com.tw 僅提供最新一個交易日，本專案改用期交所�
 集保戶股權分散表（千張大戶、散戶持股比例，可看最近 13 週的逐週趨勢），上櫃個股日K、三大法人、融資融券可回溯任意過去日期；
 上市當沖統計、除權息結果、類股指數歷史
 > *"環球晶的大戶持股比例是多少？" / "半導體類指數上個月表現如何？"*
+
+### ETF
+所有投信、上市與上櫃（含債券 ETF、主動式 ETF）：基本資料（經理公司、追蹤指數、配息頻率、經理人、上櫃 ETF 管理費）、每日已發行單位數增減與預估淨值／折溢價排行、每月規模／受益人數／申購買回／定期定額趨勢（2007 年起），以及成分股：每月前十大持股（2021-08 起）與每季占淨值 1% 以上的持股（2021-09 起）
+> *"0050 現在溢價多少？" / "哪些 ETF 今天被大量買回？" / "00981A 這半年受益人數怎麼變化？" / "00878 前十大持股是哪些？"*
 
 ### 總體經濟
 國發會景氣對策信號（景氣燈號）與領先/同時/落後指標、臺灣 PMI/NMI、中央銀行每日匯率
@@ -118,25 +123,33 @@ openapi.taifex.com.tw 僅提供最新一個交易日，本專案改用期交所�
 }
 ```
 
+### 🎛️ 只開部分資料來源
+工具很多，用不到的來源可以關掉，減少 client 要讀的工具清單。來源代號：`twse`（證交所）、`tpex`（櫃買中心）、`taifex`（期交所）、`mops`（公開資訊觀測站）、`tdcc`（集保）、`sitca`（投信投顧公會）、`ndc`（國發會）、`cbc`（央行）。
+- `TWSE_INCLUDE_SOURCES=twse,tpex`：只開這些來源（不設＝全部）
+- `TWSE_EXCLUDE_SOURCES=taifex`：關掉這些來源
+
+工具只要用到一個沒開的來源就不會出現（例如 ETF 基本資料同時查投信投顧公會、證交所、櫃買中心）。Docker 用 `-e TWSE_EXCLUDE_SOURCES=taifex` 傳入。
+
 ### 🔧 本地安裝
 ```bash
 git clone https://github.com/twjackysu/TWStockMCPServer.git
 cd TWStockMCPServer
-uv sync && uv run fastmcp dev server.py
+uv sync && uv run fastmcp dev inspector server.py
 ```
 
 ## 📡 資料來源
 
 | 來源 | 說明 | Tools |
 |------|------|-------|
-| [TWSE OpenAPI](https://openapi.twse.com.tw) | 台灣證交所官方 API — 公司治理、ESG、財務比率、公告名單、權證、券商等 | 106 個 |
+| [TWSE OpenAPI](https://openapi.twse.com.tw) | 台灣證交所官方 API — 公司治理、ESG、財務比率、公告名單、權證、券商等 | 105 個 |
 | [TWSE Web API](https://www.twse.com.tw) | 證交所網頁 API（皆預設最新交易日，可查任意過去日期）— 個股日K、月均價、估值、融資融券、上市三大法人買賣超（金額/股數）、全市場收盤行情、加權指數歷史、外資持股歷史、個股月/年成交彙總、鉅額交易明細、融券借券餘額/成交、除權除息計算結果、當日沖銷交易標的與統計、全部指數（含類股指數）收盤（皆可查最新或任意過去日期） | 19 個 |
-| [MIS 即時報價](https://mis.twse.com.tw) | 盤中即時多股報價（上市+上櫃） | 1 個 |
-| [TPEx OpenAPI](https://www.tpex.org.tw/openapi) | 櫃買中心 — 上櫃日收盤（最新一日；指定日期改用網站資料）、三大法人彙總、注意/處置股、零股、指數 | 6 個 |
+| [MIS 即時報價](https://mis.twse.com.tw) | 盤中即時多股報價（上市+上櫃）、ETF 已發行單位數與預估淨值／折溢價揭露 | 2 個 |
+| [TPEx OpenAPI](https://www.tpex.org.tw/openapi) | 櫃買中心 — 上櫃日收盤（最新一日；指定日期改用網站資料）、注意/處置股、零股、指數 | 5 個 |
 | [TAIFEX OpenAPI](https://openapi.taifex.com.tw) | 期交所 — 選擇權分析（Delta/未平倉增減）、保證金、年月統計 | 6 個 |
-| [TAIFEX 網站下載](https://www.taifex.com.tw) | 期交所網站資料下載頁面 — 期貨／選擇權每日行情、三大法人（期貨/選擇權分計、總表、各契約、買賣權分計）、期貨與選擇權大額交易人部位、Put/Call Ratio（預設最新交易日，可回溯查詢；openapi.taifex.com.tw 僅提供最新一日） | 10 個 |
+| [TAIFEX 網站下載](https://www.taifex.com.tw) | 期交所網站資料下載頁面 — 期貨／選擇權每日行情、三大法人（期貨/選擇權分計、總表、各契約、買賣權分計）、期貨與選擇權大額交易人部位、Put/Call Ratio（預設最新交易日，可回溯查詢；openapi.taifex.com.tw 僅提供最新一日）、期貨盤中分鐘 K 線（最近 30 個交易日的每筆成交） | 11 個 |
 | [公開資訊觀測站 MOPS](https://mops.twse.com.tw) | 綜合損益表／資產負債表／現金流量表、月營收、股利分派（皆預設最新一期，可查任意過去期間；上市櫃、興櫃、公發公司皆可）、重大訊息（含全文）、董監持股與設質、內部人持股異動、庫藏股、背書保證與資金貸與、法人說明會 | 11 個 |
-| [TPEx 網站](https://www.tpex.org.tw) | 櫃買中心網站 API — 上櫃個股日K、三大法人買賣超、融資融券、本益比/殖利率/淨值比、外資持股排行、除權除息計算結果（預設最新交易日，可回溯任意過去日期） | 6 個 |
+| [TPEx 網站](https://www.tpex.org.tw) | 櫃買中心網站 API — 上櫃個股日K、三大法人買賣超（可依外資／投信／自營商排行）、三大法人買賣金額彙總（日／週／月）、融資融券、本益比/殖利率/淨值比、外資持股排行、除權除息計算結果（預設最新交易日，可回溯任意過去日期） | 7 個 |
+| [投信投顧公會 ETF 專區](https://www.sitca.org.tw/ROC/SITCA_ETF/index.html) | 所有投信的 ETF 基本資料（另合併證交所基金基本資料、櫃買中心 ETF 商品規格）、每月規模／淨值／受益人數／申購買回／定期定額（2007 年起）、基金投資明細（每月前十大、每季占淨值 1% 以上持股） | 3 個 |
 | [集保結算所開放資料](https://opendata.tdcc.com.tw) | 集保戶股權分散表（最新一週完整級距，或最近 13 週逐週趨勢與週變化；後者走集保查詢頁） | 1 個 |
 | [國發會](https://data.gov.tw/dataset/6099) | 景氣對策信號與景氣指標（1982 起）、臺灣採購經理人指數 PMI/NMI | 2 個 |
 | [中央銀行](https://cpx.cbc.gov.tw) | 新台幣及主要貿易對手通貨對美元每日匯率（1993 起） | 1 個 |

@@ -2,7 +2,9 @@
 
 from typing import List, Optional
 from fastmcp import FastMCP
-from utils import TWSEAPIClient, handle_api_errors
+from fastmcp.exceptions import ToolError
+from utils import TWSEAPIClient
+from toolkit import handle_api_errors
 
 MIS_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 
@@ -14,18 +16,17 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
     @mcp.tool
     @handle_api_errors()
     def get_realtime_quote(stock_nos: List[str]) -> str:
-        """查詢台灣股票盤中即時報價，支援同時查詢多支股票。
+        """查詢台灣股票盤中即時報價（目前股價），支援同時查詢多支股票。
         上市股與上櫃股皆可查，系統自動判斷前綴。
         盤後回傳最後成交價。
 
+        回傳：每支股票的即時報價：代號、名稱、成交價、開盤、最高、最低、昨收、成交量、漲跌、漲跌幅、時間
+
         Args:
             stock_nos: 股票代號列表，例如 ["2330", "0050", "2317"]
-
-        Returns:
-            每支股票的即時報價：代號、名稱、成交價、開盤、最高、最低、昨收、成交量、漲跌、漲跌幅、時間
         """
         if not stock_nos:
-            return "請提供至少一個股票代號"
+            raise ToolError("請提供至少一個股票代號")
 
         # Build ex_ch parameter: try tse_ first for all stocks
         # Format: tse_2330.tw|tse_0050.tw|otc_6547.tw
@@ -104,10 +105,10 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
             bid_vols = item.get("g", "").rstrip("_").split("_")
 
             if asks and asks[0]:
-                ask_parts = [f"{p}({v}張)" for p, v in zip(asks, ask_vols) if p]
+                ask_parts = [f"{p}({v}張)" for p, v in zip(asks, ask_vols, strict=False) if p]
                 lines.append(f"  賣五檔: {' / '.join(ask_parts)}")
             if bids and bids[0]:
-                bid_parts = [f"{p}({v}張)" for p, v in zip(bids, bid_vols) if p]
+                bid_parts = [f"{p}({v}張)" for p, v in zip(bids, bid_vols, strict=False) if p]
                 lines.append(f"  買五檔: {' / '.join(bid_parts)}")
 
         return "\n".join(lines)

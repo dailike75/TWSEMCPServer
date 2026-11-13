@@ -1,10 +1,14 @@
 """MCP tools for TWStockMCPServer."""
 
 import importlib
+import inspect
 import pkgutil
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Set
+
+from mcp.types import ToolAnnotations
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -12,59 +16,214 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-def register_all_tools(mcp: "FastMCP", client: Optional["TWSEAPIClient"] = None) -> None:
+# Every tool only reads public market data from a third-party site: it changes nothing, the same call
+# can be repeated freely, and it reaches outside the server. Clients may use these hints to call tools
+# without asking for confirmation, or in parallel.
+# (MCP SDK v2 field names; on the wire they are readOnlyHint, destructiveHint, idempotentHint, openWorldHint.)
+READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
+
+# The data provider(s) behind each tool module, as tags. The longest matching module prefix applies.
+# A deployment can serve a subset (show_only_sources). The names, in this order, open the server
+# instructions (server.py).
+SOURCES = {
+    "twse": "證交所",          # OpenAPI, website rwd / exchangeReport, MIS quotes
+    "tpex": "櫃買中心",
+    "taifex": "期交所",
+    "mops": "公開資訊觀測站",
+    "tdcc": "集保結算所",
+    "sitca": "投信投顧公會",
+    "ndc": "國發會",
+    "cbc": "中央銀行",
+    # Not a third-party site: the operator's own PostgreSQL database of 分點進出 data
+    # (branch_trades_schema.sql). A deployment without BRANCH_DB_URL can hide these tools
+    # with show_only_sources instead of serving tools that can only report being unconfigured.
+    "branchdb": "自建分點資料庫",
+}
+SOURCE_TAGS: Dict[str, FrozenSet[str]] = {
+    "tools.analytics": frozenset({"twse", "tpex"}),       # price series and snapshots of both markets
+    "tools.branch": frozenset({"branchdb"}),
+    # also reads 證券商總公司/分公司基本資料 and the listed+OTC stock list to fill the
+    # reference tables, so it needs those two sources on as well
+    "tools.branch.backfill": frozenset({"branchdb", "twse", "tpex"}),
+    "tools.broker": frozenset({"twse"}),
+    "tools.company": frozenset({"twse"}),
+    "tools.etf.daily_nav": frozenset({"twse"}),          # MIS all_etf.txt (listed and OTC ETFs)
+    "tools.etf.holdings": frozenset({"sitca"}),
+    "tools.etf.info": frozenset({"sitca", "twse", "tpex"}),
+    "tools.etf.monthly_stats": frozenset({"sitca"}),
+    "tools.history": frozenset({"twse"}),
+    "tools.macro.exchange_rates": frozenset({"cbc"}),
+    "tools.macro.ndc_indicators": frozenset({"ndc"}),
+    "tools.market": frozenset({"twse"}),
+    "tools.mops": frozenset({"mops"}),
+    "tools.otc": frozenset({"tpex"}),
+    "tools.other": frozenset({"twse"}),
+    "tools.realtime": frozenset({"twse"}),               # MIS quotes, listed and OTC
+    "tools.taifex": frozenset({"taifex"}),
+    "tools.tdcc": frozenset({"tdcc"}),
+    "tools.trading": frozenset({"twse"}),
+}
+
+
+def source_tags(module_path: str) -> FrozenSet[str]:
+    """The source tags of a tool module (its longest prefix in ``SOURCE_TAGS``); a module without one is an error."""
+    prefixes = [p for p in SOURCE_TAGS if module_path == p or module_path.startswith(p + ".")]
+    if not prefixes:
+        raise LookupError(f"{module_path} has no entry in tools.SOURCE_TAGS: say which source(s) its tools read")
+    return SOURCE_TAGS[max(prefixes, key=len)]
+
+
+def enabled_sources(include: str = "", exclude: str = "") -> FrozenSet[str]:
+    """The sources a deployment serves: ``include`` (comma-separated tags; empty = every source) minus ``exclude``.
+
+    An unknown name is an error rather than ignored, since a typo would hide tools without a word.
+    """
+    def names(text: str) -> set:
+        found = {name.strip().lower() for name in text.split(",") if name.strip()}
+        unknown = found - set(SOURCES)
+        if unknown:
+            raise ValueError(f"unknown data source(s) {sorted(unknown)}; known sources: {', '.join(SOURCES)}")
+        return found
+
+    served = frozenset((names(include) or set(SOURCES)) - names(exclude))
+    if not served:
+        raise ValueError("every data source is excluded: the server would have no tools")
+    return served
+
+
+def show_only_sources(mcp: "FastMCP", sources: FrozenSet[str]) -> None:
+    """Hide what depends on sources outside ``sources``, with FastMCP's Visibility transform on tags.
+
+    - A tool is hidden when any source it reads is off, since it could not answer in full
+      (``get_etf_info`` reads sitca, twse and tpex). Calling a hidden tool fails as an unknown tool.
+    - A prompt stays while any of its sources is on: a prompt walks through tools of several sources
+      and is still useful with some of them. Its tags are the sources of the tools it names.
+    - Untagged components are left alone.
+    """
+    hidden = set(SOURCES) - sources
+    if not hidden:
+        return
+    mcp.disable(tags=hidden)
+    mcp.enable(tags=set(sources), components={"prompt"})  # later Visibility marks win
+    logger.info(f"Serving sources {sorted(sources)}; tools reading {sorted(hidden)} are hidden")
+
+
+@dataclass
+class RegisteredTools:
+    """What ``register_all_tools`` registered."""
+
+    tags: Dict[str, FrozenSet[str]] = field(default_factory=dict)  # every tool's source tags, by name
+    structured: Set[str] = field(default_factory=set)  # tools with an output schema (toolkit.structured)
+
+    @property
+    def text_tools(self) -> FrozenSet[str]:
+        """Tools that reply with text only."""
+        return frozenset(self.tags) - self.structured
+
+
+class ToolRegistrar:
+    """The ``mcp`` every ``register_tools(mcp, client)`` receives: ``mcp.tool`` with server-wide defaults.
+
+    Tool modules only call ``mcp.tool`` (bare, with keywords, or ``mcp.tool(name=...)(fn)``), and
+    this forwards each call to FastMCP, adding defaults that should hold for every tool:
+
+    - ``output_schema=None`` for a tool whose return type is ``str``. FastMCP 4 would otherwise
+      give it a ``{"result": string}`` output schema and send the text twice per call, in
+      ``content`` and again in ``structuredContent``.
+    - ``annotations=READ_ONLY``: every tool only reads.
+    - ``tags``: the data source(s) of the registering module (``SOURCE_TAGS``).
+
+    A keyword the tool passes itself always wins. ``registered``, when given, collects each tool's
+    name, final tags and whether it passed an output schema (``register_all_tools`` returns it: the
+    prompts take their tags from it, and the response cap leaves structured tools out).
+    """
+
+    def __init__(self, mcp: "FastMCP", tags: FrozenSet[str] = frozenset(),
+                 registered: Optional[RegisteredTools] = None):
+        self._mcp = mcp
+        self._tags = tags
+        self._registered = registered
+
+    def tool(self, name_or_fn: Any = None, **kwargs: Any) -> Any:
+        if callable(name_or_fn):
+            return self._register(name_or_fn, None, kwargs)
+        return lambda fn: self._register(fn, name_or_fn, kwargs)
+
+    def _register(self, fn: Callable[..., Any], name: Optional[str], kwargs: dict) -> Any:
+        if inspect.signature(fn, eval_str=True).return_annotation is str:
+            kwargs = {"output_schema": None, **kwargs}
+        kwargs = {"annotations": READ_ONLY, **kwargs}
+        if self._tags:
+            kwargs = {"tags": set(self._tags), **kwargs}
+        if name is not None:  # mcp.tool("custom_name")
+            kwargs = {"name": name, **kwargs}
+        if self._registered is not None:
+            tool_name = kwargs.get("name") or fn.__name__
+            self._registered.tags[tool_name] = frozenset(kwargs.get("tags") or ())
+            if isinstance(kwargs.get("output_schema"), dict):
+                self._registered.structured.add(tool_name)
+        return self._mcp.tool(fn, **kwargs)
+
+
+# Registration order is the tools/list order, and a client's regex tool search returns its matches in that
+# order: Anthropic's takes the first 5 (or the model's `limit`) matching tools in catalog order, unranked.
+# These packages are the TWSE OpenAPI pass-through tools (company governance and ESG, brokers, warrants,
+# lists): more than half the catalog, worded broadly (持股、股利、公司、指數), and rarely what a question is
+# after. Registered last, they no longer push the hand-written tools out of the first results.
+OPENAPI_PACKAGES = ("tools.broker", "tools.company", "tools.market", "tools.other", "tools.trading")
+
+
+def _is_openapi_module(module_path: str) -> bool:
+    return any(module_path == p or module_path.startswith(p + ".") for p in OPENAPI_PACKAGES)
+
+
+def discover_tool_modules() -> List[str]:
+    """Dotted names of every tool module (``tools/*.py`` and ``tools/<package>/*.py``) in registration order:
+    sorted, with the OpenAPI pass-through packages (``OPENAPI_PACKAGES``) after the rest."""
+    tools_package = Path(__file__).parent.resolve()  # Use absolute path
+    logger.info(f"Scanning tools in: {tools_package}")
+
+    modules = []
+    for module_info in pkgutil.iter_modules([str(tools_package)]):
+        if not module_info.ispkg:
+            modules.append(f"tools.{module_info.name}")
+            continue
+        subpackage_path = tools_package / module_info.name
+        for sub_info in pkgutil.iter_modules([str(subpackage_path)]):
+            if not sub_info.ispkg:
+                modules.append(f"tools.{module_info.name}.{sub_info.name}")
+    return sorted(modules, key=lambda m: (_is_openapi_module(m), m))
+
+
+def register_all_tools(mcp: "FastMCP", client: Optional["TWSEAPIClient"] = None) -> RegisteredTools:
     """
     Automatically discover and register all MCP tools from submodules.
-    
+
+    Fails fast: a module that cannot be imported, lacks ``register_tools`` or raises while
+    registering stops the server from starting. Logging and carrying on would start a
+    server that silently lacks that module's tools.
+
+    Modules register through a ``ToolRegistrar`` around ``mcp``, which applies the server-wide
+    tool defaults and the module's source tags. Returns what was registered: every tool's tags by
+    name (``prompts.register_all_prompts`` tags each prompt with those of the tools it names) and
+    which tools return structured data.
+
     Args:
         mcp: FastMCP instance to register tools with
         client: TWSEAPIClient instance for dependency injection
     """
-    try:
-        tools_package = Path(__file__).parent.resolve()  # Use absolute path
-        logger.info(f"Scanning tools in: {tools_package}")
-        
-        # Get all subpackages and modules
-        modules_to_register = []
-        
-        # Scan direct modules in tools/
-        for module_info in pkgutil.iter_modules([str(tools_package)]):
-            if not module_info.ispkg and module_info.name != '__init__':
-                full_name = f"tools.{module_info.name}"
-                modules_to_register.append(full_name)
-                logger.debug(f"Found module: {full_name}")
-        
-        # Scan subpackages (company, trading, market)
-        for subpackage_info in pkgutil.iter_modules([str(tools_package)]):
-            if subpackage_info.ispkg:
-                subpackage_path = tools_package / subpackage_info.name
-                for module_info in pkgutil.iter_modules([str(subpackage_path)]):
-                    if not module_info.ispkg and module_info.name != '__init__':
-                        full_name = f"tools.{subpackage_info.name}.{module_info.name}"
-                        modules_to_register.append(full_name)
-                        logger.debug(f"Found submodule: {full_name}")
-        
-        logger.info(f"Total modules to register: {len(modules_to_register)}")
+    modules = discover_tool_modules()
+    logger.info(f"Total modules to register: {len(modules)}")
 
-        # Import and register tools from each module
-        for module_path in sorted(modules_to_register):
-            try:
-                logger.info(f"Registering tools from: {module_path}")
-                module = importlib.import_module(module_path)
-                if hasattr(module, 'register_tools'):
-                    # Simply call with client dependency
-                    # All tool modules must now accept this signature
-                    module.register_tools(mcp, client)
-                    logger.info(f"Successfully registered tools from {module_path}")
-                else:
-                    logger.warning(f"Module {module_path} has no register_tools function")
-                        
-            except Exception as e:
-                # Log warning but continue with other modules
-                logger.error(f"Failed to register tools from {module_path}: {e}", exc_info=True)
-                
-    except Exception as e:
-        logger.error(f"Critical error during tool discovery: {e}", exc_info=True)
+    registered = RegisteredTools()
+    for module_path in modules:
+        logger.info(f"Registering tools from: {module_path}")
+        module = importlib.import_module(module_path)
+        if not hasattr(module, "register_tools"):
+            raise ImportError(f"Tool module {module_path} has no register_tools(mcp, client) function")
+        module.register_tools(ToolRegistrar(mcp, tags=source_tags(module_path), registered=registered), client)
+    return registered
 
 
-__all__ = ['register_all_tools']
+__all__ = ['OPENAPI_PACKAGES', 'READ_ONLY', 'SOURCES', 'SOURCE_TAGS', 'RegisteredTools', 'ToolRegistrar', 'discover_tool_modules',
+           'enabled_sources', 'register_all_tools', 'show_only_sources', 'source_tags']

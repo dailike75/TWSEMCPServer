@@ -5,10 +5,10 @@ from typing import Optional
 from utils import (
     TWSEAPIClient,
     MSG_NO_DATA,
-    handle_api_errors,
     format_list_response,
     create_simple_list_formatter,
 )
+from toolkit import handle_api_errors
 
 def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None:
     """Register other tools with the MCP instance."""
@@ -16,22 +16,6 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
     # Use injected client or fallback to singleton
     _client = client or TWSEAPIClient.get_instance()
     
-    @mcp.tool
-    @handle_api_errors()
-    def get_fund_basic_info() -> str:
-        """查詢基金基本資料彙總表。"""
-        data = _client.fetch_data("/opendata/t187ap47_L")
-        if not data:
-            return MSG_NO_DATA.format(data_type="基金基本")
-
-        def formatter(item):
-            name = item.get("基金中文名稱") or item.get("基金名稱") or item.get("基金簡稱") or "N/A"
-            code = item.get("基金代號", "N/A")
-            fund_type = item.get("基金類型", "N/A")
-            return f"- {name} ({code}): 基金類型 {fund_type}\n"
-
-        return format_list_response(data, "基金基本資料", formatter)
-
     @mcp.tool
     @handle_api_errors()
     def get_central_depository_bond_redemption() -> str:
@@ -46,7 +30,7 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
     @mcp.tool
     @handle_api_errors()
     def get_market_holiday_schedule() -> str:
-        """查詢有價證券集中交易市場開（休）市日期。"""
+        """查詢有價證券集中交易市場開（休）市日期：全年的休市日（國定假日等）與說明。"""
         data = _client.fetch_data("/holidaySchedule/holidaySchedule")
         if not data:
             return MSG_NO_DATA.format(data_type="有價證券集中交易市場開（休）市日期")

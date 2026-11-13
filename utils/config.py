@@ -34,10 +34,12 @@ class APIConfig:
         '30.0'
     ))
     
-    # SSL verification (set to False for TWSE API due to certificate issues)
+    # TLS certificate verification for every upstream (on by default; every host verifies,
+    # see utils/http_transport.py). Setting it to false turns verification off everywhere — an
+    # escape hatch for e.g. a TLS-intercepting corporate proxy, not something any upstream needs.
     VERIFY_SSL: Final[bool] = os.getenv(
         'TWSE_VERIFY_SSL',
-        'false'
+        'true'
     ).lower() in ('true', '1', 'yes')
 
     # TTL (seconds) for the in-memory OpenAPI list-response cache in TWSEAPIClient.fetch_data.
@@ -55,6 +57,48 @@ class APIConfig:
     RESPONSE_CACHE_MAX_ENTRIES: Final[int] = int(os.getenv(
         'TWSE_RESPONSE_CACHE_MAX_ENTRIES',
         '256'
+    ))
+
+    # Per-site circuit breaker (utils/circuit_breaker.py): this many failed requests in a row to
+    # one site (or one refusal: HTTP 403/429, a block page) stop requests to it for the cooldown,
+    # which doubles each time the probe after it fails, up to the maximum. 0 disables the breaker.
+    BREAKER_FAILURES: Final[int] = int(os.getenv(
+        'TWSE_BREAKER_FAILURES',
+        '3'
+    ))
+    BREAKER_COOLDOWN: Final[float] = float(os.getenv(
+        'TWSE_BREAKER_COOLDOWN',
+        '30'
+    ))
+    BREAKER_MAX_COOLDOWN: Final[float] = float(os.getenv(
+        'TWSE_BREAKER_MAX_COOLDOWN',
+        '600'
+    ))
+
+
+class ServerConfig:
+    """Which tools the server shows."""
+
+    # Data sources to serve: comma-separated source tags (tools.SOURCES: twse, tpex, taifex, mops,
+    # tdcc, sitca, ndc, cbc). INCLUDE empty = every source; EXCLUDE is taken off what INCLUDE leaves.
+    # A tool that reads a source not served is hidden (tools.show_only_sources), e.g.
+    # TWSE_EXCLUDE_SOURCES=taifex drops the futures/options tools from tools/list.
+    INCLUDE_SOURCES: Final[str] = os.getenv(
+        'TWSE_INCLUDE_SOURCES',
+        ''
+    )
+    EXCLUDE_SOURCES: Final[str] = os.getenv(
+        'TWSE_EXCLUDE_SOURCES',
+        ''
+    )
+
+    # Last-resort cap on one tool reply, in bytes of the serialized result (FastMCP's
+    # ResponseLimitingMiddleware): a longer reply is cut and ends with a notice. Tools keep their own
+    # row limits; normal replies measured 2-48 KB and a whole board at once (every listed stock,
+    # every TXO strike) 110-280 KB, while every warrant at once is 5.6 MB. 0 turns the cap off.
+    MAX_RESPONSE_BYTES: Final[int] = int(os.getenv(
+        'TWSE_MAX_RESPONSE_BYTES',
+        '500000'
     ))
 
 
@@ -110,6 +154,7 @@ class TestConfig:
 __all__ = [
     'APIConfig',
     'BranchDBConfig',
+    'ServerConfig',
     'DisplayConfig',
     'TestConfig',
 ]

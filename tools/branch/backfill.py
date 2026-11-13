@@ -21,13 +21,15 @@ only show stock codes. See ``utils/broker_mapping.py`` for the resolution rules 
 the measured hit rates.
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 from fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
-from utils import MSG_BRANCH_DB_NOT_CONFIGURED, TWSEAPIClient, handle_api_errors
+from toolkit import handle_api_errors
+from utils import MSG_BRANCH_DB_NOT_CONFIGURED, TWSEAPIClient
 from utils.broker_mapping import resolve_broker_mapping
-from utils.market_snapshot import LISTED, OTC, market_snapshot
+from services.market_snapshot import LISTED, OTC, market_snapshot
 from utils.neon_db import Statement, get_branch_db
 
 HQ_ENDPOINT = "/brokerService/brokerList"
@@ -38,7 +40,14 @@ BRANCH_CODE_FIELD, BRANCH_NAME_FIELD = "證券商代號", "證券商名稱"
 
 MARKET_BY_LABEL = {LISTED: "TWSE", OTC: "TPEx"}
 
-TARGETS = ("all", "brokers", "stocks")
+Target = Literal["all", "brokers", "stocks"]
+
+# Every other tool in this server only reads, so tools/__init__.py annotates them all
+# READ_ONLY. This one writes, and a client told a writing tool is read-only may call it
+# without asking first. An upsert replaces nobody else's rows and repeats harmlessly, so
+# it is not destructive either.
+WRITES = ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                         idempotent_hint=True, open_world_hint=True)
 
 UPSERT_BROKER_SQL = """
 INSERT INTO brokers (broker_code, broker_name)
@@ -68,9 +77,9 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
     """Register the reference-table backfill tool."""
     _client = client or TWSEAPIClient.get_instance()
 
-    @mcp.tool
+    @mcp.tool(annotations=WRITES)
     @handle_api_errors()
-    def backfill_branch_reference_data(target: str = "all", dry_run: bool = True) -> str:
+    def backfill_branch_reference_data(target: Target = "all", dry_run: bool = True) -> str:
         """回填分點資料庫的參考表：券商總公司對照（brokers、broker_code）與股票主檔（stocks）。
 
         資料來源為證交所公開資料：證券商總公司基本資料（brokerService/brokerList）、
@@ -81,22 +90,18 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
         只會寫入 brokers、broker_branches.broker_code、stocks 三處，不會動到
         branch_daily_trades、branch_stock_daily、import_log 等交易資料。
 
+        回傳：試算或寫入結果：各表筆數、對應方式統計，以及無法解析的分點清單
+
         Args:
             target: "all"（預設，兩者都做）、"brokers"（券商總公司與 broker_code）、
                 "stocks"（股票主檔）
             dry_run: True（預設）只試算並回報將變更的內容，完全不寫入；
                 確認無誤後再以 dry_run=False 實際寫入
-
-        Returns:
-            試算或寫入結果：各表筆數、對應方式統計，以及無法解析的分點清單
         """
         db = get_branch_db()
         if not db.configured:
             return MSG_BRANCH_DB_NOT_CONFIGURED
 
-        target = (target or "all").strip().lower()
-        if target not in TARGETS:
-            return f"target 只接受 {', '.join(TARGETS)}，收到 {target!r}"
         if not dry_run and not db.write_configured:
             return (
                 "未設定可寫入的連線字串。請設定 BRANCH_DB_WRITE_URL（或讓 BRANCH_DB_URL "

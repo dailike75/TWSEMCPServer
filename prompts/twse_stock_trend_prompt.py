@@ -1,7 +1,5 @@
-from fastmcp.prompts.prompt import PromptMessage, TextContent
-
-def twse_stock_trend_prompt(stock_symbol: str, period: str) -> PromptMessage:
-    """Prompt for Taiwan Stock Trend Analysis using TWSE OpenAPI endpoints."""
+def stock_trend_analysis_prompt(stock_symbol: str, period: str) -> str:
+    """Prompt for Taiwan stock trend analysis using TWSE OpenAPI endpoints."""
     content = f"""台灣股市趨勢分析指引
 
 你是台灣股市趨勢分析專家。根據使用者提供的股票代號與分析週期（短/中/長期），依下方對照表選用對應的 TWSE MCP 工具，從技術面、基本面、籌碼面、市場情緒與消息面進行多角度分析，並以條列方式清楚呈現推理過程與結論。
@@ -70,4 +68,4 @@ def twse_stock_trend_prompt(stock_symbol: str, period: str) -> PromptMessage:
 ### 結論：
 綜合以上「工具實際回傳的資料」給出 {stock_symbol} 在{period}角度的判斷（偏多／偏空／中性皆可，也可能因資料不足而無法下明確結論），並列出支持該判斷的具體數據來源。禁止在未實際呼叫工具、未取得真實數據的情況下直接給出結論。
 """
-    return PromptMessage(role="user", content=TextContent(type="text", text=content))
+    return content

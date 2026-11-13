@@ -9,10 +9,11 @@ have no download-page counterpart.
 
 import csv
 import io
-from datetime import datetime, timedelta
-from typing import Callable, List, Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import Callable, List, Optional, Tuple, TypeVar, Union
 
 from .date_helper import taipei_today  # noqa: F401  (re-exported; fetch_period and tools use it)
+from .deadline import time_budget
 
 # TAIFEX requires a browser-like User-Agent (the default stock-mcp/1.0 gets HTML)
 TAIFEX_HEADERS = {
@@ -31,8 +32,12 @@ TAIFEX_CACHE_TTL = 300
 # How far back the "latest trading day" lookup walks. Covers the longest market closures
 # (Lunar New Year) with room to spare.
 LATEST_LOOKBACK_DAYS = 12
+# Time for that walk (utils/deadline.py). A normal lookup takes about a second (one to four
+# small requests); without a limit, 12 requests to a hanging site could take ten minutes.
+LATEST_LOOKUP_BUDGET = 60
 
 ParsedCsv = Tuple[List[str], List[List[str]]]
+T = TypeVar("T")
 
 
 def parse_yyyymmdd(value: str) -> datetime:
@@ -43,38 +48,26 @@ def parse_date_range(
     start_date: str,
     end_date: str,
     max_span_days: int,
-    example: str,
-) -> Tuple[Optional[datetime], Optional[datetime], Optional[str]]:
-    """Parse and validate the YYYYMMDD start/end pair every download tool takes.
+) -> Union[Tuple[datetime, datetime], str]:
+    """Check the start/end pair every download tool takes, as one range.
 
-    All of these tools reject a range on the same three grounds (unparseable date,
-    reversed order, span over the client-side cap), so the checks live here instead of
-    once per module. Returns (start_dt, end_dt, None) when the range is usable, or
-    (None, None, message) carrying the Chinese message the tool should return verbatim.
-
-    ``example`` is echoed in the format-error message so it matches the calling tool's
-    own docstring example.
+    Each date's format is checked before the tool runs (``toolkit.TradingDate``); what is
+    left are the rules across the two, the same for every tool: start not after end, and
+    a span within the tool's cap. Returns (start_dt, end_dt) when the range is usable, or
+    the Chinese message the tool should raise.
     """
-    try:
-        start_dt = parse_yyyymmdd(start_date)
-        end_dt = parse_yyyymmdd(end_date)
-    except ValueError:
-        return None, None, (
-            f"日期格式錯誤，請使用 YYYYMMDD 格式（例如 {example}），"
-            f"收到：start_date={start_date}, end_date={end_date}"
-        )
-
+    start_dt, end_dt = parse_yyyymmdd(start_date), parse_yyyymmdd(end_date)
     if start_dt > end_dt:
-        return None, None, f"起始日期 {start_date} 不可晚於結束日期 {end_date}"
+        return f"起始日期 {start_date} 不可晚於結束日期 {end_date}"
 
     span_days = (end_dt - start_dt).days
     if span_days > max_span_days:
-        return None, None, (
+        return (
             f"查詢區間不可超過 {max_span_days} 天（收到 {span_days} 天），"
             f"請縮小 start_date～end_date 範圍後重試"
         )
 
-    return start_dt, end_dt, None
+    return start_dt, end_dt
 
 
 def decode_and_parse_csv(body: bytes) -> Optional[ParsedCsv]:
@@ -109,17 +102,17 @@ def decode_and_parse_csv(body: bytes) -> Optional[ParsedCsv]:
 
 
 def fetch_period(
-    fetch: Callable[[datetime, datetime], Optional[ParsedCsv]],
+    fetch: Callable[[datetime, datetime], Optional[T]],
     start_date: str,
     end_date: str,
     max_span_days: int,
-    example: str,
-    is_complete: Optional[Callable[[ParsedCsv], bool]] = None,
-) -> Tuple[Optional[ParsedCsv], str, Optional[str]]:
+    is_complete: Optional[Callable[[T], bool]] = None,
+) -> Tuple[Optional[T], str, Optional[str]]:
     """Run ``fetch`` for the requested period, or for the latest trading day when both
-    dates are empty.
+    dates are empty. ``fetch`` returns what the caller reads (a ``ParsedCsv``, or a gateway's
+    typed rows), None when that period has no data.
 
-    Returns (parsed or None, human label of the period, error message or None). With no
+    Returns (fetched or None, human label of the period, error message or None). With no
     dates it walks back from today (Taiwan time) one day per request until a day has data,
     so a weekend or holiday costs a few small requests rather than one large multi-day
     download. ``is_complete`` lets a caller skip a day that only has part of its data so
@@ -127,22 +120,24 @@ def fetch_period(
     """
     if not start_date and not end_date:
         day = taipei_today()
-        for _ in range(LATEST_LOOKBACK_DAYS):
-            parsed = fetch(day, day)
-            if parsed is not None and (is_complete is None or is_complete(parsed)):
-                return parsed, f"{day:%Y%m%d}（最新交易日）", None
-            day -= timedelta(days=1)
+        with time_budget(LATEST_LOOKUP_BUDGET, "可改指定日期，或稍後再試"):
+            for _ in range(LATEST_LOOKBACK_DAYS):
+                parsed = fetch(day, day)
+                if parsed is not None and (is_complete is None or is_complete(parsed)):
+                    return parsed, f"{day:%Y%m%d}（最新交易日）", None
+                day -= timedelta(days=1)
         return None, "最新交易日", None
 
     start_date, end_date = start_date or end_date, end_date or start_date
-    start_dt, end_dt, error = parse_date_range(start_date, end_date, max_span_days, example)
-    if error:
-        return None, "", error
+    checked = parse_date_range(start_date, end_date, max_span_days)
+    if isinstance(checked, str):
+        return None, "", checked
+    start_dt, end_dt = checked
     label = start_date if start_date == end_date else f"{start_date}～{end_date}"
     return fetch(start_dt, end_dt), label, None
 
 
-def download_form(start_dt: datetime, end_dt: datetime, **extra: str) -> dict:
+def download_form(start_dt: date, end_dt: date, **extra: str) -> dict:
     """The form fields every download page takes, plus endpoint-specific ones."""
     return {"queryStartDate": f"{start_dt:%Y/%m/%d}", "queryEndDate": f"{end_dt:%Y/%m/%d}", **extra}
 
@@ -150,3 +145,23 @@ def download_form(start_dt: datetime, end_dt: datetime, **extra: str) -> dict:
 def is_contract_code(value: str) -> bool:
     """True for a contract code such as TX / TXF / TXO, False for a Chinese name like 臺股期貨."""
     return value.isascii() and value.replace("_", "").isalnum()
+
+
+# openapi SSFLists: every stock / ETF with stock futures. A stock can have two contracts
+# (standard and 小型, e.g. 2330 → CDF and QFF). Changes only when TAIFEX adds underlyings.
+SSF_LISTS_URL = "https://openapi.taifex.com.tw/v1/SSFLists"
+SSF_LISTS_CACHE_TTL = 6 * 3600
+
+
+def is_stock_code(value: str) -> bool:
+    """True for a stock / ETF code (2330, 0050, 00878), which never starts with a letter."""
+    return value[:1].isdigit()
+
+
+def stock_futures_contracts(client, stock_code: str) -> List[Tuple[str, str]]:
+    """(contract, stock name) of every stock-futures contract on ``stock_code``."""
+    rows = client.fetch_json(SSF_LISTS_URL, headers=TAIFEX_HEADERS, cache_ttl=SSF_LISTS_CACHE_TTL)
+    if not isinstance(rows, list):
+        raise ValueError(f"SSFLists 回傳格式已變更: {str(rows)[:120]}")
+    return [(r["Contract"].strip(), r.get("StockName", "").strip())
+            for r in rows if str(r.get("StockCode", "")).strip() == stock_code]

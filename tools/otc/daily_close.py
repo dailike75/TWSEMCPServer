@@ -9,17 +9,14 @@ larger) and has 均價 and 次日參考價, while the website's afterTrading/otc
 
 from typing import Optional
 from fastmcp import FastMCP
-from utils import TWSEAPIClient, handle_api_errors, DEFAULT_DISPLAY_LIMIT, MSG_OFFSET_OUT_OF_RANGE, format_list_response
-from .history import TPEX_WWW, date_params, filter_rows, first_table, resp_date
+from utils import TWSEAPIClient, DEFAULT_DISPLAY_LIMIT, Page, format_list_response, printed
+from toolkit import Limit, Offset, TradingDate, handle_api_errors
+from sources.tpex.daily_quotes import ALL_SECURITIES, STOCKS_AND_ETFS, OtcQuoteDay, otc_daily_quotes
 
 TPEX_DAILY_CLOSE_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
-OTC_QUOTES_URL = f"{TPEX_WWW}/afterTrading/otc"
-# type=EW is stocks and ETFs (~1,000 rows); type=AL adds ~10,700 warrants (~1.5 MB), which
-# TPEx cut off mid-transfer on 1 of 5 test downloads. EW first, AL only when a requested
-# code isn't in it (i.e. a warrant).
-TYPE_STOCKS, TYPE_ALL = "EW", "AL"
-# A past trading day's quotes never change.
-PAST_QUOTES_CACHE_TTL = 600
+# A past date reads the website's afterTrading/otc (sources/tpex/daily_quotes.py): stocks and ETFs
+# (~1,000 rows) first; every security (~10,700 more warrants, ~1.5 MB, which TPEx cut off
+# mid-transfer on 1 of 5 test downloads) only when a requested code isn't there (a warrant).
 
 
 def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None:
@@ -40,21 +37,17 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
             if not data:
                 return f"查無名稱包含「{name}」的上櫃股票收盤行情"
 
-        total = len(data)
-        page_data = data[offset:offset + limit]
-        if not page_data:
-            return MSG_OFFSET_OUT_OF_RANGE.format(
-                offset=offset, data_type="上櫃市場收盤行情資料", count=total
-            )
-        end = min(offset + limit, total)
+        paged = Page(limit, offset).take(data)
+        if paged.past_end:
+            return paged.out_of_range("上櫃市場收盤行情資料")
 
-        header = f"【上櫃市場收盤行情 {page_data[0].get('Date', '')}】（共 {total} 筆"
-        if total > limit or offset > 0:
-            header += f"，顯示第 {offset + 1}–{end} 筆"
+        header = f"【上櫃市場收盤行情 {paged.rows[0].get('Date', '')}】（共 {paged.total} 筆"
+        if paged.span():
+            header += f"，{paged.span()}"
         header += "）\n"
 
         lines = [header]
-        for item in page_data:
+        for item in paged.rows:
             lines.append(
                 f"{item.get('SecuritiesCompanyCode', '?')} {item.get('CompanyName', '?')} | "
                 f"收: {item.get('Close', '-')} | 漲跌: {str(item.get('Change', '-')).strip()} | "
@@ -63,61 +56,52 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
                 f"金額: {item.get('TransactionAmount', '-')} | 筆數: {item.get('TransactionNumber', '-')}"
             )
 
-        remaining = total - offset - limit
-        if remaining > 0:
-            lines.append(f"\n...還有 {remaining} 筆，使用 offset={offset + limit} 查看更多")
+        if paged.more():
+            lines.append("\n" + paged.more())
         return "\n".join(lines)
 
     @mcp.tool
     @handle_api_errors()
-    def get_otc_daily(date: str = "", stock_no: str = "", name: str = "",
-                      limit: int = DEFAULT_DISPLAY_LIMIT, offset: int = 0) -> str:
+    def get_otc_daily(date: TradingDate = "", stock_no: str = "", name: str = "",
+                      limit: Limit = DEFAULT_DISPLAY_LIMIT, offset: Offset = 0) -> str:
         """查詢上櫃（OTC）市場的單日收盤行情：預設最新交易日（含權證等全部證券），也可指定過去日期
         （清單為股票及 ETF；指定權證代號時會自動查詢全部證券）。
         可查單一個股或整個市場的快照。單一上櫃股票整月日K請用 get_otc_stock_history。
         注意：指定 date 時資料來自櫃買中心網站，成交量值「不含定價交易」且沒有均價欄；
         不帶 date（最新交易日）時含定價交易並附均價。
 
+        回傳：每支上櫃證券的收盤、漲跌、開高低、成交股數、成交金額、成交筆數（最新交易日另含均價）
+
         Args:
-            date: 查詢日期 YYYYMMDD（選填，留空＝最新交易日）
+            date: 查詢日期 西元 YYYYMMDD（選填，留空＝最新交易日）
             stock_no: 股票代號（選填）
             name: 名稱關鍵字（選填）
             limit: 回傳筆數上限（預設 50）
             offset: 跳過前 N 筆（預設 0，搭配 limit 分頁）
-
-        Returns:
-            每支上櫃證券的收盤、漲跌、開高低、成交股數、成交金額、成交筆數（最新交易日另含均價）
         """
         if not date.strip():
             return _latest(stock_no, name, limit, offset)
 
-        params = date_params(date)
-        if params is None:
-            return "日期格式錯誤，請使用 YYYYMMDD，例如 \"20260929\""
-        def fetch(security_type):
-            resp = _client.fetch_json(
-                OTC_QUOTES_URL, params={**params, "type": security_type, "response": "json"},
-                cache_ttl=PAST_QUOTES_CACHE_TTL,
-            )
-            return resp, first_table(resp).get("data") or []
-
-        resp, rows = fetch(TYPE_STOCKS)
-        if not rows:
+        stock_no = stock_no.strip()
+        day = otc_daily_quotes(_client, date, STOCKS_AND_ETFS)
+        if day is None:
             return f"查無 {date} 的上櫃收盤行情，請確認該日期為交易日（非假日或週末）"
         scope = "股票及 ETF"
-        if stock_no and not filter_rows(rows, stock_no, ""):
-            resp, rows = fetch(TYPE_ALL)
+        if stock_no and not any(q.code == stock_no for q in day.quotes):
+            day = otc_daily_quotes(_client, date, ALL_SECURITIES) or OtcQuoteDay(date="", group="", quotes=[])
             scope = "含權證等全部證券"
-        rows = filter_rows(rows, stock_no, name)
+        quotes = [q for q in day.quotes if (not stock_no or q.code == stock_no) and (not name or name in q.name)]
 
-        def fmt(r):
-            # r: 代號,名稱,收盤,漲跌,開盤,最高,最低,成交股數,成交金額(元),成交筆數,最後買價,最後買量,
-            #    最後賣價,最後賣量,發行股數,次日漲停價,次日跌停價
+        def price(value):
+            return printed(value, blank="----")  # how TPEx marks a price without a trade
+
+        def fmt(q):
             return (
-                f"{r[0]} {r[1]} | 收: {r[2]} | 漲跌: {r[3]} | 開: {r[4]} | 高: {r[5]} | 低: {r[6]} | "
-                f"量: {r[7]} | 金額: {r[8]} | 筆數: {r[9]} | 最後買/賣: {r[10]}/{r[12]}\n"
+                f"{q.code} {q.name} | 收: {price(q.close)} | 漲跌: {q.change} | 開: {price(q.open)} | "
+                f"高: {price(q.high)} | 低: {price(q.low)} | 量: {printed(q.volume)} | 金額: {printed(q.value)} | "
+                f"筆數: {printed(q.transactions)} | 最後買/賣: {price(q.last_bid)}/{price(q.last_ask)}\n"
             )
 
         return format_list_response(
-            rows, f" {resp_date(resp, date)} 上櫃{scope}收盤行情（成交量值不含定價交易）", fmt, limit, offset
+            quotes, f" {day.date or date} 上櫃{scope}收盤行情（成交量值不含定價交易）", fmt, limit, offset
         )

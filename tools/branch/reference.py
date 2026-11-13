@@ -9,12 +9,14 @@ result as a market fact.
 from typing import Optional
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 
+from toolkit import Limit, Offset, handle_api_errors
 from utils import (
     MSG_BRANCH_DB_NOT_CONFIGURED,
     MSG_BRANCH_STOCK_NOT_COVERED,
+    Page,
     TWSEAPIClient,
-    handle_api_errors,
 )
 from utils.branch_format import format_date, format_lots
 from utils.neon_db import get_branch_db
@@ -89,12 +91,11 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
         這個資料庫的內容取決於使用者自己的匯入流程，不是整個市場都有。查詢未收錄的
         股票時其他工具會明確回「未收錄」而不是「無資料」，避免被誤讀成「沒人買賣」。
 
+        回傳：資料涵蓋的日期範圍、股票清單、分點與券商主檔狀態；成交量以「張」顯示
+
         Args:
             stock_id: 股票代號（選填）。留空列出所有已收錄股票；填入則列出該股每個
                 有資料的交易日，並與 import_log 的匯入筆數對照
-
-        Returns:
-            資料涵蓋的日期範圍、股票清單、分點與券商主檔狀態；成交量以「張」顯示
         """
         db = get_branch_db()
         if not db.configured:
@@ -177,20 +178,19 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
 
     @mcp.tool
     @handle_api_errors()
-    def search_broker_branch(keyword: str, limit: int = 50, offset: int = 0) -> str:
+    def search_broker_branch(keyword: str, limit: Limit = 50, offset: Offset = 0) -> str:
         """以名稱關鍵字或代號前綴查詢分點（券商分公司）代號。
 
         分點代號區分大小寫：'9A9d' 是永豐古亭、'9A9D' 是永豐忠孝，兩個不同分點。
         這裡的名稱與代號比對不分大小寫方便尋找，但把代號拿去其他工具查詢時必須照
         本工具回傳的大小寫原樣使用。
 
+        回傳：分點代號、名稱、所屬券商總公司（若已回填）、首次與最後出現的交易日
+
         Args:
             keyword: 分點名稱關鍵字（例如 "富邦"、"永豐古亭"）或代號前綴（例如 "9A9"）
             limit: 回傳筆數上限（預設 50）
             offset: 跳過前 N 筆（預設 0，搭配 limit 分頁）
-
-        Returns:
-            分點代號、名稱、所屬券商總公司（若已回填）、首次與最後出現的交易日
         """
         db = get_branch_db()
         if not db.configured:
@@ -198,7 +198,7 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
 
         keyword = (keyword or "").strip()
         if not keyword:
-            return "請提供分點名稱關鍵字或代號前綴，例如 keyword=\"富邦\" 或 keyword=\"9A9\"。"
+            raise ToolError("請提供分點名稱關鍵字或代號前綴，例如 keyword=\"富邦\" 或 keyword=\"9A9\"。")
 
         pattern = _escape_like(keyword)
         rows = db.query(
@@ -209,17 +209,16 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
         if not rows:
             return f"查無名稱或代號符合「{keyword}」的分點。"
 
-        total = len(rows)
-        if offset >= total:
-            return f"offset={offset} 已超出範圍，符合「{keyword}」的分點共 {total} 個。"
+        paged = Page(limit, offset).take(rows)
+        if paged.past_end:
+            return paged.out_of_range(f"符合「{keyword}」的分點")
 
-        page = rows[offset : offset + limit]
-        end = min(offset + limit, total)
-        header = f"符合「{keyword}」的分點共 {total} 個"
-        if total > limit or offset > 0:
-            header += f"（顯示第 {offset + 1}–{end} 個）"
+        header = f"符合「{keyword}」的分點共 {paged.total} 個"
+        span = paged.span("個")
+        if span:
+            header += f"（{span}）"
         lines = [header + "：", ""]
-        for row in page:
+        for row in paged.rows:
             broker = (
                 f"，所屬券商 {row['broker_name']} ({row['broker_code']})"
                 if row.get("broker_code")
@@ -229,8 +228,8 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
                 f"- {row['branch_code']} {row['branch_name']}{broker}"
                 f"，出現於 {format_date(row.get('first_seen'))} ~ {format_date(row.get('last_seen'))}"
             )
-        remaining = total - end
-        if remaining > 0:
-            lines.append(f"\n... 還有 {remaining} 個，使用 offset={end} 查看更多")
+        more = paged.more("個")
+        if more:
+            lines.append("\n" + more)
         lines.append("\n注意：代號區分大小寫，請照上面的大小寫原樣使用。")
         return "\n".join(lines)

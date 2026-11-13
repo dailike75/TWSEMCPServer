@@ -1,9 +1,7 @@
 """Prompt for TAIFEX futures/options derivatives analysis."""
 
-from fastmcp.prompts.prompt import PromptMessage, TextContent
 
-
-def taifex_derivatives_prompt(scope: str = "comprehensive") -> PromptMessage:
+def taifex_derivatives(scope: str = "comprehensive") -> str:
     """Prompt for TAIFEX futures/options chip analysis using TAIFEX OpenAPI endpoints."""
     content = f"""台灣期貨選擇權籌碼分析指引
 
@@ -32,7 +30,8 @@ def taifex_derivatives_prompt(scope: str = "comprehensive") -> PromptMessage:
 - `get_options_oi_change()`：選擇權未平倉增減，可推算潛在支撐壓力區
 
 **每日行情：**
-- `get_daily_futures_market_report(contract="TX", start_date="", end_date="")`：期貨每日行情（日期留空＝最新交易日，可查過去一個月內區間）
+- `get_daily_futures_market_report(contract="TX", start_date="", end_date="")`：期貨每日行情（日期留空＝最新交易日，可查過去一個月內區間；contract 也可填股票代號查股票期貨）
+- `get_futures_intraday(contract="TX", date="", interval=5, session="day")`：盤中分鐘 K 線（最近 30 個交易日），看高低點出現時間與盤中多空拉鋸，`session="night"` 看夜盤
 - `get_daily_options_market_report(contract="TXO", start_date="", end_date="", contract_month="", call_put="", limit=30)`：選擇權每日行情（依成交量排序；指定 contract_month 看完整履約價序列）
 
 **保證金：**
@@ -41,7 +40,7 @@ def taifex_derivatives_prompt(scope: str = "comprehensive") -> PromptMessage:
 
 **統計：**
 - `get_annual_trading_volume(contract="")`：年度交易量統計
-- `get_monthly_trading_statistics()`：月度交易統計
+- `get_monthly_trading_statistics(market="futures")`：上月各類交易人（散戶、外資、自營商…）交易量；`market="options"` 看選擇權
 
 ### 分析範圍：
 
@@ -79,4 +78,4 @@ def taifex_derivatives_prompt(scope: str = "comprehensive") -> PromptMessage:
 
 請先呼叫上述對應工具取得真實資料，再依實際回傳內容提供完整的期貨選擇權籌碼分析。
 """
-    return PromptMessage(role="user", content=TextContent(type="text", text=content))
+    return content

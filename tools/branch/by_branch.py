@@ -10,15 +10,16 @@ the stored amount columns. Averaging each day's average price instead would weig
 one-lot day the same as a five-hundred-lot day.
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 from fastmcp import FastMCP
 
+from toolkit import Limit, Offset, TradingDate, handle_api_errors
 from utils import (
     MSG_BRANCH_DB_NOT_CONFIGURED,
     MSG_BRANCH_STOCK_NOT_COVERED,
+    Page,
     TWSEAPIClient,
-    handle_api_errors,
 )
 from utils.branch_format import (
     format_avg_price,
@@ -35,7 +36,8 @@ from utils.branch_query import (
 )
 from utils.neon_db import get_branch_db
 
-SIDES = ("both", "buy", "sell", "net")
+Side = Literal["both", "buy", "sell", "net"]
+GroupBy = Literal["branch", "broker"]
 
 RANKING_BY_BRANCH_SQL = """
 SELECT d.stock_id,
@@ -117,40 +119,33 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
     @handle_api_errors()
     def get_branch_stock_ranking(
         branch: str,
-        start_date: str = "",
-        end_date: str = "",
-        side: str = "both",
-        group_by: str = "branch",
-        limit: int = 30,
-        offset: int = 0,
+        start_date: TradingDate = "",
+        end_date: TradingDate = "",
+        side: Side = "both",
+        group_by: GroupBy = "branch",
+        limit: Limit = 30,
+        offset: Offset = 0,
     ) -> str:
         """查詢某一分點（或券商總公司）在一段期間內買賣超了哪些股票，含期間加權均價。
+
+        回傳：依買賣超排序的股票清單，含期間買／賣張數、買賣超、期間加權買賣均價與有交易天數
 
         Args:
             branch: 分點代號（區分大小寫）或名稱關鍵字，例如 "9600" 或 "富邦"；
                 group_by="broker" 時也可直接給券商名稱
-            start_date: 起始日 YYYY-MM-DD 或 YYYYMMDD（選填，留空代表最近 20 個交易日）
+            start_date: 起始日，格式 西元 YYYYMMDD（選填，留空代表最近 20 個交易日）
             end_date: 結束日（選填，留空代表資料最新日）
             side: "both"（預設，買超前 N 與賣超前 N）、"buy"、"sell"、
                 "net"（依買賣超絕對值排行）
             group_by: "branch"（預設，單一分點）或 "broker"（該券商所有分點合計，
                 需先回填 broker_code）
             limit: 每個方向回傳的股票數上限（預設 30）
-            offset: 跳過前 N 筆（預設 0）；僅在 side 為 "buy"/"sell"/"net" 時生效
-
-        Returns:
-            依買賣超排序的股票清單，含期間買／賣張數、買賣超、期間加權買賣均價與有交易天數
+            offset: 跳過前 N 筆（預設 0），side="both" 時兩個方向各自套用
         """
         db = get_branch_db()
         if not db.configured:
             return MSG_BRANCH_DB_NOT_CONFIGURED
 
-        side = (side or "both").strip().lower()
-        group_by = (group_by or "branch").strip().lower()
-        if side not in SIDES:
-            return f"side 只接受 {', '.join(SIDES)}，收到 {side!r}"
-        if group_by not in ("branch", "broker"):
-            return f"group_by 只接受 \"branch\" 或 \"broker\"，收到 {group_by!r}"
 
         if group_by == "broker":
             target = resolve_broker(db, branch)
@@ -192,12 +187,13 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
         ]
 
         def section(title: str, ordered: list) -> None:
-            page = ordered[offset : offset + limit] if side != "both" else ordered[:limit]
-            if not page:
+            # side="both" renders two ranked lists; limit/offset apply to each of them.
+            paged = Page(limit, offset).take(ordered)
+            if not paged.rows:
                 return
             lines.append("")
             lines.append(f"{title}：")
-            for row in page:
+            for row in paged.rows:
                 branches = (
                     f"，{int(row['branch_count']):,} 個分點"
                     if group_by == "broker" and row.get("branch_count")
@@ -211,12 +207,9 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
                     f" / 賣均價 {format_avg_price(row.get('sell_amt'), row.get('sell_vol'))}"
                     f"，有交易 {int(row.get('days') or 0):,} 天{branches}"
                 )
-            shown = offset + len(page) if side != "both" else len(page)
-            if len(ordered) > shown:
-                lines.append(
-                    f"... 還有 {len(ordered) - shown:,} 檔"
-                    + (f"，使用 offset={shown} 查看更多" if side != "both" else "")
-                )
+            more = paged.more("檔")
+            if more:
+                lines.append(more)
 
         if side == "both":
             buyers = [r for r in sorted(rows, key=_net, reverse=True) if _net(r) > 0]
@@ -241,23 +234,22 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
     def get_branch_daily_history(
         branch: str,
         stock_id: str = "",
-        start_date: str = "",
-        end_date: str = "",
-        limit: int = 60,
-        offset: int = 0,
+        start_date: TradingDate = "",
+        end_date: TradingDate = "",
+        limit: Limit = 60,
+        offset: Offset = 0,
     ) -> str:
         """查詢某一分點的逐日進出紀錄，可選擇只看某一檔股票。
+
+        回傳：由新到舊排列的逐日紀錄，含買／賣張數、買賣超與當日買賣均價
 
         Args:
             branch: 分點代號（區分大小寫）或名稱關鍵字，例如 "9600" 或 "富邦"
             stock_id: 股票代號（選填）。留空則列出該分點每天在各股的進出
-            start_date: 起始日 YYYY-MM-DD 或 YYYYMMDD（選填，留空代表最近 20 個交易日）
+            start_date: 起始日，格式 西元 YYYYMMDD（選填，留空代表最近 20 個交易日）
             end_date: 結束日（選填，留空代表資料最新日）
             limit: 回傳筆數上限（預設 60）
             offset: 跳過前 N 筆（預設 0，搭配 limit 分頁）
-
-        Returns:
-            由新到舊排列的逐日紀錄，含買／賣張數、買賣超與當日買賣均價
         """
         db = get_branch_db()
         if not db.configured:
@@ -290,20 +282,19 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
                 "期間沒有進出紀錄。"
             )
 
-        total = len(rows)
-        if offset >= total:
-            return f"offset={offset} 已超出範圍，{resolved.label}{scope} 期間共 {total:,} 筆。"
+        paged = Page(limit, offset).take(rows)
+        if paged.past_end:
+            return paged.out_of_range(f"{resolved.label}{scope} 期間的紀錄")
 
-        page = rows[offset : offset + limit]
-        end_index = min(offset + limit, total)
         header = (
             f"{resolved.label}{scope} 逐日進出 {format_date(start)} ~ {format_date(end)}，"
-            f"共 {total:,} 筆"
+            f"共 {paged.total:,} 筆"
         )
-        if total > limit or offset > 0:
-            header += f"（顯示第 {offset + 1}–{end_index} 筆）"
+        span = paged.span()
+        if span:
+            header += f"（{span}）"
         lines = [header, ""]
-        for row in page:
+        for row in paged.rows:
             stock = "" if stock_id else f" {_stock_label(row)}"
             lines.append(
                 f"- {format_date(row['trade_date'])}{stock}  "
@@ -312,7 +303,8 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
                 f"買均價 {format_avg_price(row.get('buy_amt'), row.get('buy_vol'))}"
                 f" / 賣均價 {format_avg_price(row.get('sell_amt'), row.get('sell_vol'))}"
             )
-        if total > end_index:
-            lines.append(f"\n... 還有 {total - end_index:,} 筆，使用 offset={end_index} 查看更多")
+        more = paged.more()
+        if more:
+            lines.append("\n" + more)
         lines.append("\n說明：數量單位為「張」（1 張 = 1000 股）。")
         return "\n".join(lines)
