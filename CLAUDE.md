@@ -18,6 +18,7 @@ TWStockMCPServer is a Model Context Protocol (MCP) server for Taiwan stock marke
 - **中央銀行** (`cpx.cbc.gov.tw`) — 1 tool: 每日匯率
 - **衍生分析** (`tools/analytics/`) — 4 tools: 還原權息日K、技術指標、選股 screener、同業比較（`services/market_snapshot.py`：估值與行情取同一資料日；上市/上櫃產業代碼同一套）。由 `services/price_series.py`（上市 STOCK_DAY（`sources/twse/stock_day.py`）／上櫃 tradingStock（`sources/tpex/trading_stock.py`）日K、TWT49U（`sources/twse/twt49u.py`）／exDailyQ（`sources/tpex/ex_daily_q.py`）除權息，自動判斷市場並還原）與 `utils/indicators.py`（純計算）組成
 - **TAIFEX 網站下載** (`www.taifex.com.tw/cht/3/*Down`、`dlFutPrevious30DaysSalesData`) — 11 tools: 期貨／選擇權每日行情、三大法人（期貨/選擇權分計、總表、各期貨契約、各選擇權契約、買賣權分計）、期貨與選擇權大額交易人（無伺服器端契約篩選，本地端過濾）、Put/Call Ratio。日期留空＝最新交易日（往回逐日找有資料的一天），也可查過去區間。2026-09-29 逐列比對：最新一日的資料涵蓋同名 openapi 端點的全部內容且更完整，因此取代了那 9 個 openapi 工具；選擇權大額交易人於 2026-10-07 同樣逐列比對（320 列，僅「所有月份總計」代碼 999912 vs 999999 不同）後也改用下載頁（largeTraderOptDown，一次最多約一個月，整年區間會被拒絕）。`get_futures_intraday`：最近 30 個交易日的每筆成交 zip 彙總成分鐘 K 線。`get_daily_futures_market_report` 的 contract 可填股票代號（openapi `SSFLists` 換成股票期貨契約）；`get_monthly_trading_statistics(market=)` 涵蓋期貨與選擇權（openapi）
+- **分點進出資料庫** (自建 PostgreSQL，例如 Neon；`branch_trades_schema.sql`) — 7 tools: 資料覆蓋範圍、分點代號查詢、個股某日各分點買賣超、個股分價量表、個股×分點逐日時序、分點期間各股買賣超排行、分點逐日紀錄。資料來自使用者自己的匯入流程而非公開 API，所以**只收錄已匯入的股票與日期**（先查 `get_branch_data_coverage`）；未設定 `BRANCH_DB_URL` 時工具照常註冊但回提示。數量一律以「張」呈現（資料庫以股儲存，保留零股精度）。參考表（`brokers`/`broker_code`/`stocks`）由 `scripts/backfill_branch_reference_data.py` 回填 —— 會寫入資料庫，所以是腳本而不是工具（本 server 的工具一律唯讀）
 
 ## Development Commands
 
@@ -61,6 +62,8 @@ toolkit/                      # MCP-side building blocks for tool modules (only 
 └── structured.py             # output_schema(Result) / structured_reply(text, result): text + dataclass replies (see Structured output)
 services/                     # Data the tools need, assembled from gateways + pure logic (uses sources/, utils/)
 ├── price_series.py           # Daily bars (listed/OTC auto-detected) + ex-rights events + backward adjustment
+├── branch_reference.py       # Plans the branch DB's reference tables (brokers / broker_code / stocks)
+                              #   from TWSE data; writes nothing — scripts/backfill_… applies the plan
 └── market_snapshot.py        # Latest-day listed+OTC valuation/price snapshot (same data date, per market) and industry membership
 sources/                      # Gateways: one module per upstream endpoint, typed records out (uses utils/ only)
 ├── columns.py                # column_index(): find columns by published field name, raise if one is gone; qualified_fields(): "group/name" from TWSE groups
@@ -116,6 +119,13 @@ utils/                        # Bottom layer: HTTP, parsing, formatting. Never i
 ├── mops.py                   # MOPS helpers: mops_post (JSON API), mops_legacy_post (HTML), titles/HTML-table parsing
 ├── taifex.py                 # TAIFEX helpers: headers, cp950 CSV decode, date ranges, latest-trading-day lookup (fetch_period)
 ├── indicators.py             # Pure functions: SMA/EMA/RSI/KD/MACD/Bollinger
+├── neon_db.py                # Branch-trades PostgreSQL: lazy per-URL pool (min_size=0 for autosuspend),
+                              #   parameterized query + one-retry cold start, TTL cache, write_transaction
+├── branch_query.py           # Branch-trades lookups: branch/broker resolution (case-sensitive codes),
+                              #   coverage checks, trading-day date-range defaults
+├── branch_format.py          # 股→張 conversion, volume-weighted average price, 連買/連賣 streak
+├── broker_mapping.py         # 分點 → 券商總公司 resolution from TWSE reference data (pure; its docstring
+                              #   has the measured hit rates and the 臺/台, HTML-entity and dash quirks)
 ├── config.py                 # APIConfig, DisplayConfig, TestConfig (env var overrides)
 ├── constants.py              # Localized message templates (Chinese)
 ├── date_helper.py            # roc_date() / roc_year_of() / slash_date(): a YYYYMMDD input → an upstream's form; parse_roc_date() / roc_to_ad() / roc_day() for ROC dates in replies; taipei_today()
@@ -152,6 +162,7 @@ tools/
                               #   history, valuation_holdings (www.tpex.org.tw website JSON: stock OHLC, 三大法人, 融資融券,
                               #   本益比, 外資持股; latest or any past date)
 └── taifex/                   # TAIFEX derivatives. Download pages (latest day or any period):
+    (branch/ is listed above the OpenAPI packages: reference, by_stock, by_branch)
                               #   daily_market_report, futures_position, institutional_details,
                               #   institutional_general, large_traders_oi (futures + options), put_call_ratio,
                               #   intraday (tick-data zips → minute bars).
@@ -214,6 +225,12 @@ All configuration in `utils/config.py` reads from environment variables with sen
 - `DISPLAY_LIMIT` (default: `50`)
 - `PYTEST_DELAY_SECONDS` (default: `1.0` — rate limit delay between tests)
 
+Branch-trades database (all optional; with none of them set the branch tools still register and report that they are unconfigured):
+- `BRANCH_DB_URL` — connection string for the query tools; point it at a read-only role
+- `BRANCH_DB_WRITE_URL` — used only by `scripts/backfill_branch_reference_data.py --apply`; falls back to `BRANCH_DB_URL`
+- `BRANCH_DB_CACHE_TTL` (default: `300`) — past trade dates are immutable, so results cache well
+- `BRANCH_DB_TIMEOUT` (default: `15`), `BRANCH_DB_MAX_ROWS` (default: `5000`)
+
 ## Testing
 
 Two kinds of tests, kept strictly apart:
@@ -236,6 +253,8 @@ The `conftest.py` autouse fixture sleeps between live tests to avoid rate limiti
 - `tests/unit/test_argument_validation_unit.py` — calls the real `server.mcp` with values the schemas reject and checks the Chinese message; every `limit` / `offset` carries its bounds in the schema; every `Literal` matches the mapping it indexes. Calling a tool function directly skips this validation, so test rejected values here, not in the per-tool tests.
 - `tests/unit/test_argument_errors_unit.py` — scans every tool function for an argument-error message (`必須是`, `只能是`, `格式錯誤`, …) or a validator's `error` that is `return`ed instead of raised as `ToolError`. "查無…" replies are normal results and stay `return` (except in structured tools, see Structured output).
 - `tests/unit/test_contract_scope_unit.py` — keeps `tests/contract/` to interface checks: it fails on arithmetic (other than list/string concatenation and `len(...) ± int`), ordering comparisons other than `len(...)` against an int or a set relation, `a <= b <= c`, and `abs`/`sum`/`min`/`max`/`round` — the shapes data validation takes (sums, identities, price × volume, ranges). Assert messages and f-strings are not scanned. A line that genuinely checks an interface carries `# contract-ok: <reason>` (e.g. the tick file's HHMMSS time). It cannot see equality-shaped data facts ("2330 went ex-dividend on 2025-06-12"); those stay out by the rule above.
+- `tests/unit/test_branch_db_unit.py` — offline guards for the branch tools and for `services/branch_reference.py`: 股→張 conversion, volume-weighted period average price, 連買 streak, pagination, the four distinct empty-data messages, case-sensitive branch codes, the broker-mapping boundary cases, and that planning a backfill writes nothing and never names a trade table.
+- `tests/contract/test_branch_db_api.py` — contract test for the branch database, skipped unless `BRANCH_DB_URL` is set. Asserts the hardcoded columns exist, `branch_code` keeps its case-sensitive `C` collation, and the rollup still equals the price-level detail. It does not assert that any stock or day is loaded.
 
 **Fixtures** in `conftest.py`: `sample_stock_code` returns `"2330"` (TSMC), `sample_stock_code_with_data` returns `"1210"`.
 
@@ -290,3 +309,4 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
 - **SITCA 基金投資明細** (`utils/sitca.py`, `tools/etf/holdings.py`): `www.sitca.org.tw/ROC/Industry/IN2629.aspx` (monthly top 10) and `IN2630.aspx` (quarterly, every holding >1% of NAV) are ASP.NET postback forms. Querying a period other than the default one requires the period postback first (`__EVENTTARGET=ctl00$ContentPlaceHolder1$ddlQ_YM`) — without it the server silently returns the first issuer's (兆豐) funds. Then POST the query with that reply's hidden fields and only the enabled fields (`ddlQ_YM`, `rdo1=rbClass`, `ddlQ_Class`, `BtnQuery`). No cookie needed, so GET + both POSTs are cached. The result table has no id, closes header `<td>` with `</th>`, and rowspans the fund name. Rows carry fund names only: the tool resolves the code in the ETF zone (`基金名稱`, `類型代號`; for a past period the names of that month, found by 基金統編, because funds get renamed) and compares `fund_name_key` (drops the ` (本基金…)` disclaimer and the ETF zone's `-新台幣(配息)` share-class suffix). Exact match only — 正向2倍 vs 反向1倍 differ by two characters. Checked 2022-01 / 2025-01 / 2026-08: every non-leveraged/inverse ETF matched except two absent from that month's filing; leveraged/inverse ETFs are not listed (futures and cash).
 - **MIS ETF feed** (`tools/etf/daily_nav.py`): `mis.twse.com.tw/stock/data/all_etf.txt` — `a1[]` per issuer, each `msgArray[]` with TWSE's 介接格式 fields a–k (code, name, units, unit change, price, est. NAV, premium %, prior NAV or `未結出`, date, time, type). Issuers send numbers or strings inconsistently.
 - **TDCC query page** (`sources/tdcc/qry_stock.py`, used by `tools/tdcc/shareholding_distribution.py`): `www.tdcc.com.tw/portal/zh/smWeb/qryStock` has no CAPTCHA, but it is a stateful form: GET the page (sets `JSESSIONID`; hidden `SYNCHRONIZER_TOKEN`, `firDate`, and a `scaDate` list of ~51 weeks newest first), then POST `SYNCHRONIZER_TOKEN`, `SYNCHRONIZER_URI=/portal/zh/smWeb/qryStock`, `method=submit`, `firDate`, `scaDate`, `sqlMethod=StockNo`, `stockNo`, `stockName`. Tokens are single-use and every reply carries the next one, so `StockQuery` chains them inside one `requests.Session` (`fetch_bytes(..., session=)`, which also bypasses the response cache) and reloads the page if a reply has none. Unknown code → `查無此資料`. Compared with the open-data CSV (2026-10-02; 2330, 6488, 0050): levels 1–15 and the total are identical; only 差異數調整 differs (page keeps the sign and drops the row when zero), so the trend ignores it. Past weeks are immutable and kept in an in-process cache.
+- **Branch trades DB** (`tools/branch/`, `utils/neon_db.py`, `services/branch_reference.py`): the schema is in `branch_trades_schema.sql`. Query the rollup `branch_stock_daily` whenever a price level is not needed — it is the only table indexed branch-first (`idx_bsd_branch_date`), while `branch_daily_trades` is indexed `(stock_id, trade_date, branch_code, price)` and must always be queried with a stock and a date (one stock-day reached 5,250 rows: 682 branches × 68 price levels). `branch_code` is `COLLATE "C"` because `9A9d` 永豐古亭 and `9A9D` 永豐忠孝 are different branches: match codes exactly, search names case-insensitively. `broker_code`, `brokers` and `stocks` may be empty — the schema leaves the branch→firm link nullable because it cannot be derived from the code prefix (`1020` 合庫 and `1030` 土銀 share `10`) — so `group_by="broker"` and stock names depend on the backfill script having run. Where a result covers the whole market the buy and sell sides are equal by construction (每一股買進都是某人賣出), so the totals collapse to one volume and one VWAP instead of printing the same number twice. Period average prices are Σamt ÷ Σvol, never the mean of daily averages. Nothing in `tools/` writes: the only writer is `scripts/backfill_branch_reference_data.py`, which defaults to a dry run, applies its three statements in one transaction, and never touches `branch_daily_trades` / `branch_stock_daily` / `import_log`.

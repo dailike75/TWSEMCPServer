@@ -22,10 +22,10 @@ from decimal import Decimal
 import pytest
 from fastmcp.exceptions import ToolError
 
-import tools.branch.backfill as backfill
 import tools.branch.by_branch as by_branch
 import tools.branch.by_stock as by_stock
 import tools.branch.reference as reference
+import services.branch_reference as branch_reference
 import utils.neon_db as neon_db
 from tests.helpers import register_module_tools
 from tests.offline import OfflineClient
@@ -182,7 +182,6 @@ def test_parse_trade_date_rejects_ambiguous_input():
                 ("get_branch_daily_history", {"branch": "9600"}),
             ],
         ),
-        (backfill, [("backfill_branch_reference_data", {})]),
     ],
 )
 def test_every_tool_reports_missing_configuration(monkeypatch, module, calls):
@@ -192,9 +191,12 @@ def test_every_tool_reports_missing_configuration(monkeypatch, module, calls):
         assert registered[name](**kwargs) == MSG_BRANCH_DB_NOT_CONFIGURED, name
 
 
-def test_all_eight_tools_are_registered():
+def test_the_catalog_holds_seven_read_only_branch_tools():
+    """回填不在工具目錄裡：本 server 每一支工具都是唯讀的
+    （tests/unit/test_tool_registration_unit.py），所以會寫入資料庫的回填
+    改成 scripts/backfill_branch_reference_data.py。"""
     names = set()
-    for module in (reference, by_stock, by_branch, backfill):
+    for module in (reference, by_stock, by_branch):
         names |= set(tools_of(module))
     assert names == {
         "get_branch_data_coverage",
@@ -204,8 +206,8 @@ def test_all_eight_tools_are_registered():
         "get_stock_branch_trend",
         "get_branch_stock_ranking",
         "get_branch_daily_history",
-        "backfill_branch_reference_data",
     }
+    assert "backfill_branch_reference_data" not in names
 
 
 # ------------------------------------------------------------ 四種空資料訊息
@@ -451,7 +453,6 @@ def test_enum_parameters_are_literals_so_the_schema_rejects_bad_values():
         (by_stock, "get_stock_price_detail", "group_by", ("price", "branch")),
         (by_branch, "get_branch_stock_ranking", "side", ("both", "buy", "sell", "net")),
         (by_branch, "get_branch_stock_ranking", "group_by", ("branch", "broker")),
-        (backfill, "backfill_branch_reference_data", "target", ("all", "brokers", "stocks")),
     ]:
         fn = tools_of(module)[tool]
         hints = typing.get_type_hints(fn)
@@ -769,13 +770,12 @@ def test_broker_mapping_falls_back_to_the_stored_branch_name():
     assert result.methods["961Z"] == "db_name_prefix"
 
 
-# --------------------------------------------------------------- 回填工具
-
+# ----------------------------------------------- 回填（services.branch_reference）
 
 BACKFILL_ROUTES = {
     "/brokerService/brokerList": [{"Code": c, "Name": n} for c, n in HQ_ROWS],
     "/opendata/OpenData_BRK02": [
-        {"證券商代號": c, "證券商名稱": n} for c, n in BRANCH_ROWS
+        {"証券商代號": c, "証券商名稱": n} for c, n in BRANCH_ROWS
     ],
 }
 
@@ -791,85 +791,82 @@ def backfill_db(db):
     return db
 
 
-def test_backfill_dry_run_writes_nothing(backfill_db):
-    out = tools_of(backfill, OfflineClient(BACKFILL_ROUTES))["backfill_branch_reference_data"](
-        target="brokers"
-    )
-    assert backfill_db.transactions == [], "dry_run 不得開啟寫入 transaction"
-    assert "【試算】" in out
-    assert "dry_run=False" in out
-    assert "個可解析" in out
+def _plan_brokers(db):
+    return branch_reference.plan_brokers(OfflineClient(BACKFILL_ROUTES), db)
 
 
-def test_backfill_reports_unresolved_branches_in_the_dry_run(backfill_db):
+def test_planning_writes_nothing(backfill_db):
+    """plan 只說「會改什麼」，不得開啟任何寫入 transaction。"""
+    result = _plan_brokers(backfill_db)
+    assert backfill_db.transactions == []
+    assert result.statements, "應該有待寫入的語句"
+    assert "個可解析" in result.describe()
+
+
+def test_plan_reports_unresolved_branches(backfill_db):
     backfill_db.routes = {
         "SELECT branch_code, branch_name, broker_code FROM broker_branches": [
             {"branch_code": "ZZZZ", "branch_name": "無法對應", "broker_code": None}
         ]
     }
-    out = tools_of(backfill, OfflineClient(BACKFILL_ROUTES))["backfill_branch_reference_data"](
-        target="brokers"
-    )
-    assert "無法解析的分點" in out
-    assert "ZZZZ" in out
+    text = _plan_brokers(backfill_db).describe()
+    assert "無法解析的分點" in text
+    assert "ZZZZ" in text
 
 
-def test_backfill_writes_brokers_before_branches_and_touches_nothing_else(backfill_db):
-    out = tools_of(backfill, OfflineClient(BACKFILL_ROUTES))["backfill_branch_reference_data"](
-        target="brokers", dry_run=False
-    )
-    assert len(backfill_db.transactions) == 1, "三個語句必須在同一個 transaction"
-    statements = backfill_db.transactions[0]
+def test_plan_orders_brokers_before_branches_and_touches_no_trade_table(backfill_db):
+    statements = _plan_brokers(backfill_db).statements
     sqls = [s.sql.strip() for s in statements]
     assert sqls[0].startswith("INSERT INTO brokers"), "brokers 必須先寫（broker_code 有 FK）"
     assert sqls[1].startswith("UPDATE broker_branches")
     joined = " ".join(sqls)
     for forbidden in ("branch_daily_trades", "branch_stock_daily", "import_log"):
-        assert forbidden not in joined, f"回填工具不得碰 {forbidden}"
-    assert "【實際寫入】" in out
+        assert forbidden not in joined, f"回填不得碰 {forbidden}"
 
 
-def test_backfill_only_updates_branches_whose_value_changes(backfill_db):
+def test_plan_only_updates_branches_whose_value_changes(backfill_db):
     backfill_db.routes = {
         "SELECT branch_code, branch_name, broker_code FROM broker_branches": [
             {"branch_code": "9623", "branch_name": "富邦台北", "broker_code": "9600"},
-            {"branch_code": "961H", "branch_name": "富邦新板", "broker_code": None},
+            {"branch_code": "961H", "branch_name": "富邦新杷", "broker_code": None},
         ]
     }
-    tools_of(backfill, OfflineClient(BACKFILL_ROUTES))["backfill_branch_reference_data"](
-        target="brokers", dry_run=False
-    )
-    updates = [s for s in backfill_db.transactions[0] if s.sql.strip().startswith("UPDATE")]
+    updates = [s for s in _plan_brokers(backfill_db).statements if s.sql.strip().startswith("UPDATE")]
     assert len(updates) == 1
     assert [p[1] for p in updates[0].params] == ["961H"]
 
 
-def test_backfill_stocks_maps_market_labels(db, monkeypatch):
+def test_plan_stocks_maps_market_labels(monkeypatch):
     class Snap:
         def __init__(self, name, market):
             self.name, self.market = name, market
 
     monkeypatch.setattr(
-        backfill,
+        branch_reference,
         "market_snapshot",
+        # market_snapshot returns a data date per market, not one string
         lambda client: (
-            {"2330": Snap("台積電", "上市"), "6488": Snap("環球晶", "上櫃"), "9999": Snap("", "上市")},
-            "2026-11-13",
+            {"2330": Snap("台積電", "上市"), "6488": Snap("環球晶", "上櫃"),
+             "9999": Snap("", "上市")},
+            {"上市": "20261113", "上櫃": "20261113"},
         ),
     )
-    out = tools_of(backfill, OfflineClient({}))["backfill_branch_reference_data"](
-        target="stocks", dry_run=False
-    )
-    rows = db.transactions[0][0].params
+    result = branch_reference.plan_stocks(OfflineClient({}))
+    rows = result.statements[0].params
     assert ("2330", "台積電", "TWSE") in rows
     assert ("6488", "環球晶", "TPEx") in rows
     assert all(code != "9999" for code, _, _ in rows), "沒有名稱的標的要跳過"
-    assert "上市 1 / 上櫃 1" in out
+    assert "上市 1 / 上櫃 1" in result.describe()
 
 
-def test_backfill_refuses_real_write_without_write_credentials(monkeypatch):
-    monkeypatch.setattr(
-        neon_db, "_instance", FakeBranchDB(configured=True, write_configured=False)
-    )
-    out = tools_of(backfill, OfflineClient({}))["backfill_branch_reference_data"](dry_run=False)
-    assert "BRANCH_DB_WRITE_URL" in out
+def test_plan_rejects_unknown_target(backfill_db):
+    with pytest.raises(ValueError, match="target"):
+        branch_reference.plan(OfflineClient(BACKFILL_ROUTES), backfill_db, target="everything")
+
+
+def test_apply_runs_every_statement_in_one_transaction(backfill_db):
+    result = _plan_brokers(backfill_db)
+    lines = branch_reference.apply(backfill_db, result.statements)
+    assert len(backfill_db.transactions) == 1, "所有語句必須在同一個 transaction"
+    assert len(lines) == len(result.statements)
+    assert any("brokers" in line for line in lines)

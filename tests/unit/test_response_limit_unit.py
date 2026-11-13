@@ -51,7 +51,7 @@ def test_server_caps_replies_by_default():
     assert [m.max_size for m in caps] == [ServerConfig.MAX_RESPONSE_BYTES] == [500_000]
     # every text tool; structured tools bound themselves (the cap would hide their output schema)
     assert caps[0].tools == server.registered.text_tools
-    assert len(caps[0].tools) == 181 and "get_stock_screener" not in caps[0].tools
+    assert len(caps[0].tools) == 180 and "get_stock_screener" not in caps[0].tools
 
 
 def test_structured_tools_keep_their_output_schema_on_the_server():

@@ -42,9 +42,6 @@ SOURCES = {
 SOURCE_TAGS: Dict[str, FrozenSet[str]] = {
     "tools.analytics": frozenset({"twse", "tpex"}),       # price series and snapshots of both markets
     "tools.branch": frozenset({"branchdb"}),
-    # also reads 證券商總公司/分公司基本資料 and the listed+OTC stock list to fill the
-    # reference tables, so it needs those two sources on as well
-    "tools.branch.backfill": frozenset({"branchdb", "twse", "tpex"}),
     "tools.broker": frozenset({"twse"}),
     "tools.company": frozenset({"twse"}),
     "tools.etf.daily_nav": frozenset({"twse"}),          # MIS all_etf.txt (listed and OTC ETFs)
