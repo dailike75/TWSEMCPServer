@@ -224,7 +224,8 @@ def apply(db: BranchDB, statements: Sequence[Statement]) -> List[str]:
     and ``plan`` already emits them in that order. Nothing here touches the trade tables.
     """
     counts = db.write_transaction(statements)
+    # strict=True: write_transaction returns exactly one rowcount per statement.
     return [
         f"- {describe(stmt)}：影響 {max(count, 0):,} 列"
-        for stmt, count in zip(statements, counts)
+        for stmt, count in zip(statements, counts, strict=True)
     ]

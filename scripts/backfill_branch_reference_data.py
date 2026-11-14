@@ -87,7 +87,7 @@ def main(argv=None) -> int:
         return 0
 
     if not args.apply:
-        print(f"\n確認無誤後請加上 --apply 實際寫入：")
+        print("\n確認無誤後請加上 --apply 實際寫入：")
         print(f"    python scripts/backfill_branch_reference_data.py --target {args.target} --apply")
         return 0
 

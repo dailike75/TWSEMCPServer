@@ -28,7 +28,7 @@ down at import time.
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .config import BranchDBConfig

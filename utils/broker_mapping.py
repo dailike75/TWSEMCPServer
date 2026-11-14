@@ -120,7 +120,7 @@ def resolve_broker_mapping(
     )
     firms = [f for f in firms if f[0] and f[1]]
     by_name = {name: code for name, code, _ in firms}
-    for name, code, original in firms:
+    for _, code, original in firms:
         result.brokers[code] = original
 
     def match(prefix: str, full_name: str) -> Tuple[Optional[str], str]:
@@ -174,7 +174,7 @@ def resolve_broker_mapping(
     groups: Dict[str, List[str]] = {}
     for code in db_branches:
         groups.setdefault(code[:3], []).append(code)
-    for prefix, codes in groups.items():
+    for codes in groups.values():
         missing = [c for c in codes if c not in result.mapping]
         if not missing:
             continue

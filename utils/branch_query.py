@@ -149,6 +149,10 @@ def resolve_date_range(
         start = row["d"] if row and row.get("d") else end
     if end is None:
         end = latest_date(db) or start
+    if start is None or end is None:
+        # One side was given but the database is empty, so the other has nothing to
+        # fall back to; comparing against None below would raise.
+        return "分點資料庫目前沒有任何資料。"
 
     if start > end:
         return f"日期範圍顛倒：start_date {format_date(start)} 晚於 end_date {format_date(end)}"
