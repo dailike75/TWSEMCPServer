@@ -20,7 +20,7 @@ the code prefix cannot be used, are in ``utils/broker_mapping.py``.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, LiteralString, Sequence, Tuple
 
 from utils.api_client import TWSEAPIClient
 from utils.broker_mapping import resolve_broker_mapping
@@ -38,19 +38,19 @@ BRANCH_CODE_FIELD, BRANCH_NAME_FIELD = "證券商代號", "證券商名稱"
 
 MARKET_BY_LABEL = {LISTED: "TWSE", OTC: "TPEx"}
 
-UPSERT_BROKER_SQL = """
+UPSERT_BROKER_SQL: LiteralString = """
 INSERT INTO brokers (broker_code, broker_name)
 VALUES (%s, %s)
 ON CONFLICT (broker_code) DO UPDATE SET broker_name = EXCLUDED.broker_name
 """
 
-UPDATE_BRANCH_SQL = """
+UPDATE_BRANCH_SQL: LiteralString = """
 UPDATE broker_branches
 SET broker_code = %s, updated_at = now()
 WHERE branch_code = %s AND broker_code IS DISTINCT FROM %s
 """
 
-UPSERT_STOCK_SQL = """
+UPSERT_STOCK_SQL: LiteralString = """
 INSERT INTO stocks (stock_id, stock_name, market)
 VALUES (%s, %s, %s)
 ON CONFLICT (stock_id) DO UPDATE

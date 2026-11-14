@@ -10,7 +10,7 @@ the stored amount columns. Averaging each day's average price instead would weig
 one-lot day the same as a five-hundred-lot day.
 """
 
-from typing import Literal, Optional
+from typing import Literal, LiteralString, Optional
 
 from fastmcp import FastMCP
 
@@ -39,7 +39,7 @@ from utils.neon_db import get_branch_db
 Side = Literal["both", "buy", "sell", "net"]
 GroupBy = Literal["branch", "broker"]
 
-RANKING_BY_BRANCH_SQL = """
+RANKING_BY_BRANCH_SQL: LiteralString = """
 SELECT d.stock_id,
        s.stock_name,
        sum(d.buy_vol)               AS buy_vol,
@@ -54,7 +54,7 @@ WHERE d.branch_code = %s AND d.trade_date BETWEEN %s AND %s
 GROUP BY d.stock_id, s.stock_name
 """
 
-RANKING_BY_BROKER_SQL = """
+RANKING_BY_BROKER_SQL: LiteralString = """
 SELECT d.stock_id,
        s.stock_name,
        sum(d.buy_vol)               AS buy_vol,
@@ -71,7 +71,7 @@ WHERE b.broker_code = %s AND d.trade_date BETWEEN %s AND %s
 GROUP BY d.stock_id, s.stock_name
 """
 
-HISTORY_SQL = """
+HISTORY_SQL: LiteralString = """
 SELECT d.trade_date,
        d.stock_id,
        s.stock_name,
@@ -86,7 +86,7 @@ WHERE d.branch_code = %s AND d.trade_date BETWEEN %s AND %s
 ORDER BY d.trade_date DESC, abs(d.net_vol) DESC
 """
 
-HISTORY_ONE_STOCK_SQL = """
+HISTORY_ONE_STOCK_SQL: LiteralString = """
 SELECT d.trade_date,
        d.stock_id,
        s.stock_name,

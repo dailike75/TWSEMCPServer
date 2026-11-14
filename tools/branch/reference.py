@@ -6,7 +6,7 @@ trade that stock" from "that stock was never imported", and would read an empty
 result as a market fact.
 """
 
-from typing import Optional
+from typing import LiteralString, Optional
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -21,7 +21,7 @@ from utils import (
 from utils.branch_format import format_date, format_lots
 from utils.neon_db import get_branch_db
 
-COVERAGE_SUMMARY_SQL = """
+COVERAGE_SUMMARY_SQL: LiteralString = """
 SELECT (SELECT count(*) FROM broker_branches)                      AS branches,
        (SELECT count(broker_code) FROM broker_branches)            AS branches_mapped,
        (SELECT count(*) FROM brokers)                              AS brokers,
@@ -31,7 +31,7 @@ SELECT (SELECT count(*) FROM broker_branches)                      AS branches,
        (SELECT count(DISTINCT trade_date) FROM branch_stock_daily) AS days
 """
 
-COVERAGE_BY_STOCK_SQL = """
+COVERAGE_BY_STOCK_SQL: LiteralString = """
 SELECT d.stock_id,
        s.stock_name,
        s.market,
@@ -47,7 +47,7 @@ GROUP BY d.stock_id, s.stock_name, s.market
 ORDER BY d.stock_id
 """
 
-COVERAGE_DATES_SQL = """
+COVERAGE_DATES_SQL: LiteralString = """
 SELECT d.trade_date,
        count(*)           AS branches,
        sum(d.buy_vol)     AS buy_vol,
@@ -62,7 +62,7 @@ GROUP BY d.trade_date, l.row_count, l.total_vol
 ORDER BY d.trade_date DESC
 """
 
-SEARCH_BRANCH_SQL = """
+SEARCH_BRANCH_SQL: LiteralString = """
 SELECT b.branch_code,
        b.branch_name,
        b.broker_code,

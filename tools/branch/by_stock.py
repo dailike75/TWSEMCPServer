@@ -12,7 +12,7 @@ Which table each tool reads matters for both speed and meaning:
   ``get_stock_price_detail`` aggregates by price unless one branch is named.
 """
 
-from typing import Literal, Optional
+from typing import Literal, LiteralString, Optional
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -49,7 +49,7 @@ Side = Literal["both", "buy", "sell", "net"]
 GroupBy = Literal["branch", "broker"]
 PriceGroupBy = Literal["price", "branch"]
 
-BY_BRANCH_SQL = """
+BY_BRANCH_SQL: LiteralString = """
 SELECT d.branch_code      AS code,
        b.branch_name      AS name,
        d.buy_vol,
@@ -62,7 +62,7 @@ JOIN broker_branches b ON b.branch_code = d.branch_code
 WHERE d.stock_id = %s AND d.trade_date = %s
 """
 
-BY_BROKER_SQL = """
+BY_BROKER_SQL: LiteralString = """
 SELECT b.broker_code     AS code,
        k.broker_name     AS name,
        sum(d.buy_vol)    AS buy_vol,
@@ -78,7 +78,7 @@ WHERE d.stock_id = %s AND d.trade_date = %s AND b.broker_code IS NOT NULL
 GROUP BY b.broker_code, k.broker_name
 """
 
-PRICE_DETAIL_SQL = """
+PRICE_DETAIL_SQL: LiteralString = """
 SELECT price,
        sum(buy_vol)              AS buy_vol,
        sum(sell_vol)             AS sell_vol,
@@ -89,7 +89,7 @@ GROUP BY price
 ORDER BY price DESC
 """
 
-PRICE_DETAIL_ONE_BRANCH_SQL = """
+PRICE_DETAIL_ONE_BRANCH_SQL: LiteralString = """
 SELECT price,
        sum(buy_vol)              AS buy_vol,
        sum(sell_vol)             AS sell_vol,
@@ -100,7 +100,7 @@ GROUP BY price
 ORDER BY price DESC
 """
 
-TREND_SQL = """
+TREND_SQL: LiteralString = """
 SELECT trade_date, buy_vol, sell_vol, buy_amt, sell_amt, net_vol
 FROM branch_stock_daily
 WHERE stock_id = %s AND branch_code = %s AND trade_date BETWEEN %s AND %s

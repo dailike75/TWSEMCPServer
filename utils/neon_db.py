@@ -8,7 +8,9 @@ Neon-specific beyond allowing for a cold start.
 
 **Safety.** Every statement run through this module is written in this file or in
 ``tools/branch/`` and passes its values as bound parameters; no MCP tool accepts SQL
-text, and there is deliberately no generic "run this query" tool. The query tools use
+text, and there is deliberately no generic "run this query" tool. The query parameters
+are typed ``LiteralString``, as psycopg types its own, so a query assembled from a
+runtime value does not type-check — the rule is enforced, not just documented. The query tools use
 ``BranchDBConfig.URL`` — point it at a read-only role — and only the backfill tool
 calls :meth:`BranchDB.write_transaction`, which uses ``BranchDBConfig.WRITE_URL`` and
 falls back to ``URL``.
@@ -29,7 +31,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, LiteralString, Optional, Sequence, Tuple
 
 from .config import BranchDBConfig
 
@@ -58,7 +60,7 @@ class Statement:
     write several hundred rows).
     """
 
-    sql: str
+    sql: LiteralString
     params: Sequence[Any] = ()
     many: bool = False
 
@@ -158,7 +160,7 @@ class BranchDB:
     # ------------------------------------------------------------------- cache
 
     @staticmethod
-    def _cache_key(sql: str, params: Sequence[Any]) -> str:
+    def _cache_key(sql: LiteralString, params: Sequence[Any]) -> str:
         return f"{sql}||{params!r}"
 
     def _cache_get(self, key: str) -> Optional[List[Dict[str, Any]]]:
@@ -193,7 +195,7 @@ class BranchDB:
 
     def query(
         self,
-        sql: str,
+        sql: LiteralString,
         params: Sequence[Any] = (),
         *,
         cache_ttl: Optional[float] = None,
@@ -219,7 +221,7 @@ class BranchDB:
 
     def query_one(
         self,
-        sql: str,
+        sql: LiteralString,
         params: Sequence[Any] = (),
         *,
         cache_ttl: Optional[float] = None,
@@ -228,7 +230,7 @@ class BranchDB:
         rows = self.query(sql, params, cache_ttl=cache_ttl, max_rows=1)
         return rows[0] if rows else None
 
-    def _execute_read(self, sql: str, params: Sequence[Any], cap: int) -> List[Dict[str, Any]]:
+    def _execute_read(self, sql: LiteralString, params: Sequence[Any], cap: int) -> List[Dict[str, Any]]:
         url = self._read_url()
         last_error: Optional[Exception] = None
         # Two attempts: a suspended compute refuses or drops the first connection.
