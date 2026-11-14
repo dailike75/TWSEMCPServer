@@ -86,7 +86,8 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
     @mcp.tool
     @handle_api_errors()
     def get_branch_data_coverage(stock_id: str = "") -> str:
-        """查詢分點進出資料庫目前收錄了哪些股票與日期範圍（建議先查這支再查其他分點工具）。
+        """查詢券商分點進出（主力進出、籌碼）資料庫目前收錄了哪些股票與日期範圍。
+        建議先查這支再查其他分點工具。
 
         這個資料庫的內容取決於使用者自己的匯入流程，不是整個市場都有。查詢未收錄的
         股票時其他工具會明確回「未收錄」而不是「無資料」，避免被誤讀成「沒人買賣」。
@@ -179,7 +180,7 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
     @mcp.tool
     @handle_api_errors()
     def search_broker_branch(keyword: str, limit: Limit = 50, offset: Offset = 0) -> str:
-        """以名稱關鍵字或代號前綴查詢分點（券商分公司）代號。
+        """以名稱關鍵字或代號前綴查詢券商分點（分公司）代號，供其他分點／主力進出工具使用。
 
         分點代號區分大小寫：'9A9d' 是永豐古亭、'9A9D' 是永豐忠孝，兩個不同分點。
         這裡的名稱與代號比對不分大小寫方便尋找，但把代號拿去其他工具查詢時必須照

@@ -126,7 +126,8 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
         limit: Limit = 30,
         offset: Offset = 0,
     ) -> str:
-        """查詢某一分點（或券商總公司）在一段期間內買賣超了哪些股票，含期間加權均價。
+        """查詢某一券商分點（或券商總公司）在一段期間內分點買賣超了哪些股票，
+        含期間加權均價。用來追蹤一個主力分點的籌碼流向。
 
         回傳：依買賣超排序的股票清單，含期間買／賣張數、買賣超、期間加權買賣均價與有交易天數
 
@@ -239,7 +240,7 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
         limit: Limit = 60,
         offset: Offset = 0,
     ) -> str:
-        """查詢某一分點的逐日進出紀錄，可選擇只看某一檔股票。
+        """查詢某一券商分點的逐日進出紀錄（分點買賣日報、主力進出），可選擇只看某一檔股票。
 
         回傳：由新到舊排列的逐日紀錄，含買／賣張數、買賣超與當日買賣均價
 

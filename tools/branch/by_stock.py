@@ -138,7 +138,8 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
         limit: Limit = 30,
         offset: Offset = 0,
     ) -> str:
-        """查詢某檔股票某一交易日各分點（券商分公司）的買賣超與買賣均價。
+        """查詢某檔股票某一交易日各券商分點（分公司）的分點買賣超與買賣均價，
+        即一般所稱的「主力進出」、「券商分點買賣日報」籌碼分析。
 
         資料來自使用者自建的分點進出資料庫。可先用 get_branch_data_coverage 確認該股
         是否已收錄、有哪些交易日。
@@ -256,7 +257,8 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
         limit: Limit = 60,
         offset: Offset = 0,
     ) -> str:
-        """查詢某檔股票某一交易日的分價量表（各成交價位的成交張數）。
+        """查詢某檔股票某一交易日的分價量表（各成交價位的成交張數），
+        或單一券商分點在各價位的買賣張數（該分點的籌碼成本分布）。
 
         這是分點資料最細的一層。不指定 branch 時回傳全市場各價位的成交量（同一價位
         的買量與賣量必然相等，故以單一成交量表示）；指定 branch 時回傳該分點在各價位
@@ -380,7 +382,8 @@ def register_tools(mcp: FastMCP, client: Optional[TWSEAPIClient] = None) -> None
         end_date: TradingDate = "",
         limit: Limit = 60,
     ) -> str:
-        """查詢某檔股票在某一分點的逐日買賣超時序，含累計買賣超與連買／連賣天數。
+        """查詢某檔股票在某一券商分點的逐日分點買賣超時序（主力進出、籌碼動向），
+        含累計買賣超與連買／連賣天數。
 
         用來判斷一個分點是在這檔股票上持續加碼還是在出貨。
 

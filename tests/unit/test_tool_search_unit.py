@@ -77,12 +77,28 @@ WORDS = {
     "get_today_notice_stocks": ["注意股", "注意", "notice"],
     "get_market_holiday_schedule": ["休市", "假日", "holiday"],
     "get_company_profile": ["基本資料", "公司資料", "產業別", "profile"],
+    # 分點進出 goes by several names: Yahoo calls it 主力進出, TWSE 買賣日報表, and people
+    # describe the topic as 籌碼. A search for any of those must reach these tools.
+    "get_branch_data_coverage": ["分點", "券商分點", "主力進出", "籌碼", "收錄", "coverage"],
+    "search_broker_branch": ["分點", "券商分點", "分公司", "代號", "branch"],
+    "get_stock_branch_summary": ["分點", "券商分點", "分點買賣超", "主力進出", "買賣日報", "籌碼", "買賣超", "均價"],
+    "get_stock_price_detail": ["分價量表", "價位", "券商分點", "籌碼", "成交張數"],
+    "get_stock_branch_trend": ["分點", "券商分點", "主力進出", "籌碼", "連買", "連賣", "累計"],
+    "get_branch_stock_ranking": ["分點", "券商分點", "分點買賣超", "主力", "籌碼", "買賣超", "加權均價"],
+    "get_branch_daily_history": ["分點", "券商分點", "買賣日報", "主力進出", "逐日"],
 }
 
 # (question, a pattern a model writes for it, tools that answer it). The first block was written the way
 # models wrote them in live runs (2026-10-22); "(live)" ones are verbatim. Each must reach a right tool within
 # the first 10 matches, the limit models usually pass.
 SEARCHES = [
+    ("1476 分點進出", "分點|branch", {"get_stock_branch_summary", "get_branch_data_coverage"}),
+    ("1476 最近主力進出", "主力進出|主力|分點", {"get_stock_branch_summary", "get_stock_branch_trend"}),
+    ("1476 籌碼分析", "籌碼|分點|主力", {"get_stock_branch_summary", "get_stock_branch_trend", "get_branch_data_coverage"}),
+    ("券商分點買賣日報", "買賣日報|券商分點|分點", {"get_stock_branch_summary", "get_branch_daily_history"}),
+    ("富邦分點買了哪些股票", "分點|券商分點|買賣超", {"get_branch_stock_ranking"}),
+    ("1476 分價量表", "分價量表|價位", {"get_stock_price_detail"}),
+    ("永豐有哪些分點代號", "分點|分公司|券商分點", {"search_broker_branch"}),
     ("台積電三大法人(live)", "三大法人|institutional|法人", {"get_twse_institutional_investors_by_stock", "get_twse_institutional_investors_summary"}),
     ("外資買超(live)", "外資|三大法人|institutional|foreign", {"get_twse_institutional_investors_summary"}),
     ("上櫃本益比最低(live)", "本益比|PE|ratio|上櫃|otc|排行|screen|rank", {"get_stock_screener", "get_otc_valuation"}),
